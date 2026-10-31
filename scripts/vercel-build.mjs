@@ -1,14 +1,24 @@
-// Vercel build entry point. Migrations run automatically for Preview
-// deployments only, so database credentials never need to leave Vercel.
-// Production migrations stay a deliberate, manual step.
+// Vercel build entry point.
+// - Preview: apply migrations, then print a credential-free database report.
+// - Production: refuse to build against a database unless explicitly opted in,
+//   so a mis-scoped integration can never point Production at a preview database.
 import { execFileSync } from 'node:child_process';
 
 const env = process.env.VERCEL_ENV;
 const hasDb = Boolean(process.env.DATABASE_URL);
 
+if (env === 'production' && hasDb && process.env.ONEAUTH_DATABASE_ENV !== 'production') {
+  console.error(
+    '[oneauth] Refusing production build: DATABASE_URL is set but ONEAUTH_DATABASE_ENV is not "production". ' +
+      'Connect a dedicated production database and set ONEAUTH_DATABASE_ENV=production for the Production environment only.',
+  );
+  process.exit(1);
+}
+
 if (env === 'preview' && hasDb && process.env.ONEAUTH_SKIP_MIGRATIONS !== '1') {
   console.log('[oneauth] Preview deployment: applying database migrations');
   execFileSync('node', ['scripts/migrate.mjs'], { stdio: 'inherit' });
+  execFileSync('node', ['scripts/db-verify.mjs'], { stdio: 'inherit' });
 } else {
   console.log(`[oneauth] Skipping migrations (VERCEL_ENV=${env ?? 'unset'}, database ${hasDb ? 'configured' : 'not configured'})`);
 }
