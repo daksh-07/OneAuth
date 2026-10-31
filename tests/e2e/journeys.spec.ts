@@ -15,6 +15,11 @@ test('landing page renders, is accessible and has no console errors', async ({ p
   expect(errors).toEqual([]);
 });
 
+test('the server runs with the least-privilege database role', async ({ request }) => {
+  const res = await request.get('/api/health');
+  expect(await res.json()).toMatchObject({ status: 'ok', schema: 'current', runtime_role: 'least_privilege' });
+});
+
 test('protected pages redirect to sign-in when signed out', async ({ page }) => {
   for (const path of ['/home', '/devices', '/account', '/cloud', '/space']) {
     await page.goto(path);

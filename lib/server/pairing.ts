@@ -1,5 +1,5 @@
 import 'server-only';
-import { one, query, tx } from './db';
+import { asUser, one, query, tx } from './db';
 import { UserFacingError } from './errors';
 import { recordEvent, type RequestContext } from './events';
 import { findOrCreateDevice } from './devices';
@@ -54,23 +54,24 @@ export async function createPairingRequest(ctx: RequestContext) {
   throw new Error('Could not allocate a pairing code');
 }
 
+interface ResolvedPairing {
+  id: string;
+  user_code: string;
+  status: Exclude<PairingStatus, 'expired'>;
+  expires_at: Date;
+  approver_user_id: string | null;
+}
+
+/** The requesting device holds only the secret; resolve it without a tenant (SECURITY DEFINER). */
+async function resolveBySecret(secret: string): Promise<ResolvedPairing | null> {
+  return one<ResolvedPairing>(`select * from oneauth_resolve_pairing($1)`, [sha256(secret)]);
+}
+
 export async function getPairingStatusForRequester(secret: string | undefined) {
   if (!secret) return null;
-  const row = await one<PairingRow>(
-    `select id, user_code, requested_name, platform, ip::text, status, created_at, expires_at,
-            grant_kind, grant_scopes, grant_ttl_seconds
-       from device_pairing_requests where secret_hash = $1`,
-    [sha256(secret)],
-  );
+  const row = await resolveBySecret(secret);
   if (!row) return null;
-  return {
-    id: row.id,
-    code: row.user_code,
-    status: effectiveStatus(row),
-    expiresAt: row.expires_at,
-    grantKind: row.grant_kind,
-    grantScopes: row.grant_scopes,
-  };
+  return { id: row.id, code: row.user_code, status: effectiveStatus(row), expiresAt: row.expires_at };
 }
 
 /**
@@ -79,7 +80,11 @@ export async function getPairingStatusForRequester(secret: string | undefined) {
  */
 export async function claimPairing(secret: string, deviceKey: string | null, ctx: RequestContext) {
   await rateLimit(`pair-claim:${ctx.ip ?? 'unknown'}`, 30, 10 * 60);
-  return tx(async (c) => {
+  const resolved = await resolveBySecret(secret);
+  const notClaimable = new UserFacingError('not_claimable', 'This connection request is no longer valid.', 409);
+  if (!resolved?.approver_user_id || effectiveStatus(resolved) !== 'approved') throw notClaimable;
+  // Everything below runs in the approver's tenant scope.
+  return asUser(resolved.approver_user_id, () => tx(async (c) => {
     const req = await one<PairingRow & { approver_user_id: string }>(
       `update device_pairing_requests set status = 'claimed', claimed_at = now()
         where secret_hash = $1 and status = 'approved' and expires_at > now()
@@ -87,7 +92,7 @@ export async function claimPairing(secret: string, deviceKey: string | null, ctx
       [sha256(secret)],
       c,
     );
-    if (!req) throw new UserFacingError('not_claimable', 'This connection request is no longer valid.', 409);
+    if (!req) throw notClaimable;
     const userId = req.approver_user_id;
     const kind = req.grant_kind!;
     const dev = await findOrCreateDevice(
@@ -113,7 +118,7 @@ export async function claimPairing(secret: string, deviceKey: string | null, ctx
     );
     const owner = await one<{ display_name: string }>(`select display_name from users where id = $1`, [userId], c);
     return { ...session, deviceKey: dev.deviceKey, displayName: owner!.display_name, kind };
-  });
+  }));
 }
 
 // ---------------------------------------------------------------- approving device
@@ -147,7 +152,7 @@ export interface PairingForApprover {
   codeChoices: string[] | null;
 }
 
-export async function lookupPairingForApprover(
+async function lookupPairingForApproverInScope(
   session: SessionRecord,
   ref: { id: string } | { code: string },
   ctx: RequestContext,
@@ -210,7 +215,7 @@ export interface ApprovalInput {
   ttlSeconds: number;
 }
 
-export async function approvePairing(session: SessionRecord, input: ApprovalInput, ctx: RequestContext) {
+async function approvePairingInScope(session: SessionRecord, input: ApprovalInput, ctx: RequestContext) {
   assertCanApprove(session);
   if (input.kind !== 'owned' && input.kind !== 'shared') throw new UserFacingError('invalid', 'Choose a device type.');
   const allowed = GRANTABLE_SCOPES[input.kind];
@@ -285,8 +290,9 @@ export async function approvePairing(session: SessionRecord, input: ApprovalInpu
   });
 }
 
-export async function rejectPairing(session: SessionRecord, requestId: string, ctx: RequestContext) {
+async function rejectPairingInScope(session: SessionRecord, requestId: string, ctx: RequestContext) {
   assertCanApprove(session);
+  if (!/^[0-9a-f-]{36}$/i.test(requestId)) return false;
   const rows = await query(
     `update device_pairing_requests set status = 'rejected', decided_at = now()
       where id = $1 and status = 'pending' and expires_at > now() returning id`,
@@ -300,3 +306,12 @@ export async function rejectPairing(session: SessionRecord, requestId: string, c
   }
   return rows.length === 1;
 }
+
+// ---------------------------------------------------------------- tenant-scoped entry points
+
+export const lookupPairingForApprover = (...args: Parameters<typeof lookupPairingForApproverInScope>) =>
+  asUser(args[0].user_id, () => lookupPairingForApproverInScope(...args));
+export const approvePairing = (...args: Parameters<typeof approvePairingInScope>) =>
+  asUser(args[0].user_id, () => approvePairingInScope(...args));
+export const rejectPairing = (...args: Parameters<typeof rejectPairingInScope>) =>
+  asUser(args[0].user_id, () => rejectPairingInScope(...args));

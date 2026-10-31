@@ -18,6 +18,7 @@ if (env === 'production' && hasDb && process.env.ONEAUTH_DATABASE_ENV !== 'produ
 if (env === 'preview' && hasDb && process.env.ONEAUTH_SKIP_MIGRATIONS !== '1') {
   console.log('[oneauth] Preview deployment: applying database migrations');
   execFileSync('node', ['scripts/migrate.mjs'], { stdio: 'inherit' });
+  execFileSync('node', ['scripts/provision-app-role.mjs'], { stdio: 'inherit' });
   execFileSync('node', ['scripts/preview-cleanup.mjs'], { stdio: 'inherit' });
   execFileSync('node', ['scripts/db-verify.mjs'], { stdio: 'inherit' });
 } else {

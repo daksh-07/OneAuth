@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { query, one } from '@/lib/server/db';
+import { query, one } from '../helpers/admin';
 import { sha256 } from '@/lib/server/tokens';
 import { beginLogin, beginRegistration, finishLogin, finishRegistration, beginAddPasskey, finishAddPasskey, removePasskey } from '@/lib/server/webauthn';
 import { revokeSession, validateSessionToken } from '@/lib/server/sessions';

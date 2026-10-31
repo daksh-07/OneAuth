@@ -2,7 +2,7 @@
 // privileges, table ownership, RLS state, constraints, indexes, TLS and
 // migration history. Exits non-zero if a required invariant is violated.
 import pg from 'pg';
-import { pgConfig } from './pg-config.mjs';
+import { appRolePassword, pgConfig } from './pg-config.mjs';
 
 const url = process.env.DATABASE_URL;
 if (!url) {
@@ -58,11 +58,45 @@ try {
   console.log(`[db-verify] other grantees on public tables: ${grants.map((g) => `${g.grantee}(${g.n})`).join(', ') || 'none'}`);
   if (grants.some((g) => g.grantee === 'PUBLIC')) problems.push('PUBLIC has privileges on application tables');
 
+  // Least-privilege runtime role (migration 0003).
+  const [app] = await q(`select rolname, rolsuper, rolbypassrls, rolcreaterole, rolcreatedb, rolcanlogin,
+                                (select count(*)::int from pg_class c where c.relowner = r.oid) as owns
+                           from pg_roles r where rolname = 'oneauth_app'`);
+  if (!app) problems.push('runtime role oneauth_app missing');
+  else {
+    console.log(`[db-verify] runtime role oneauth_app: login=${app.rolcanlogin} superuser=${app.rolsuper} bypassrls=${app.rolbypassrls} createrole=${app.rolcreaterole} createdb=${app.rolcreatedb} owns=${app.owns}`);
+    if (app.rolsuper || app.rolbypassrls || app.rolcreaterole || app.rolcreatedb || app.owns > 0) problems.push('runtime role oneauth_app is over-privileged');
+  }
+  const unprotected = await q(`select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace
+                                where n.nspname = 'public' and c.relkind = 'r' and c.relname <> 'schema_migrations'
+                                  and not exists (select 1 from pg_policy p where p.polrelid = c.oid)`);
+  if (unprotected.length) problems.push(`tables without policies: ${unprotected.map((t) => t.relname).join(', ')}`);
+
   const counts = await q(`select (select count(*) from users)::int as users, (select count(*) from devices)::int as devices,
                                  (select count(*) from sessions)::int as sessions`);
   console.log(`[db-verify] row counts: users=${counts[0].users} devices=${counts[0].devices} sessions=${counts[0].sessions}`);
 } finally {
   await client.end();
+}
+
+// Prove the runtime credentials work and are confined: no tenant => no rows.
+const appPassword = appRolePassword(url);
+if (appPassword) {
+  const appUrl = new URL(url);
+  appUrl.username = 'oneauth_app';
+  appUrl.password = appPassword;
+  const appClient = new pg.Client(pgConfig(appUrl.toString()));
+  await appClient.connect();
+  try {
+    const [r] = (await appClient.query(`select current_user as role, (select count(*)::int from users) as visible_users,
+                                               has_table_privilege('schema_migrations', 'select') as can_read_migrations`)).rows;
+    console.log(`[db-verify] runtime login as ${r.role}: visible_users_without_tenant=${r.visible_users} can_read_migrations=${r.can_read_migrations}`);
+    if (r.role !== 'oneauth_app' || r.visible_users !== 0 || r.can_read_migrations) problems.push('runtime role is not confined');
+  } finally {
+    await appClient.end();
+  }
+} else {
+  console.log('[db-verify] no app-role password configured: runtime will connect as the owner');
 }
 if (problems.length) {
   console.error(`[db-verify] FAILED: ${problems.join('; ')}`);

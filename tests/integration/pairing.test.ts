@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { query } from '@/lib/server/db';
+import { query } from '../helpers/admin';
 import { approvePairing, claimPairing, createPairingRequest, getPairingStatusForRequester, lookupPairingForApprover, rejectPairing } from '@/lib/server/pairing';
 import { validateSessionToken } from '@/lib/server/sessions';
 import { revokeDevice, listDevices } from '@/lib/server/devices';

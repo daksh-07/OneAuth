@@ -58,3 +58,25 @@ describe('rpIdFor', () => {
     }
   });
 });
+
+describe('derived app-role password', () => {
+  it('is identical in the runtime and the build scripts, and depends on the owner password', async () => {
+    const { appRolePassword } = await import('@/lib/server/env');
+    // @ts-expect-error — plain ESM helper
+    const scripts = await import('../../scripts/pg-config.mjs');
+    const saved = { ...process.env };
+    delete process.env.ONEAUTH_DB_APP_PASSWORD;
+    process.env.ONEAUTH_DB_APP_ROLE = 'derived';
+    try {
+      const a = appRolePassword('postgres://owner:s3cr%40t@db.example/x');
+      expect(a).toBe(scripts.appRolePassword('postgres://owner:s3cr%40t@db.example/x'));
+      expect(a).toHaveLength(43);
+      expect(a).not.toContain('s3cr');
+      expect(appRolePassword('postgres://owner:other@db.example/x')).not.toBe(a);
+      delete process.env.ONEAUTH_DB_APP_ROLE;
+      expect(appRolePassword('postgres://owner:s3cr%40t@db.example/x')).toBeUndefined();
+    } finally {
+      process.env = saved;
+    }
+  });
+});

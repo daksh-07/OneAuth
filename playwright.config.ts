@@ -1,6 +1,11 @@
 import { defineConfig, devices } from '@playwright/test';
 
 const E2E_DATABASE_URL = process.env.E2E_DATABASE_URL ?? 'postgres://oneauth:oneauth@localhost:5432/oneauth_e2e';
+export const E2E_APP_PASSWORD = process.env.E2E_APP_PASSWORD ?? 'local-e2e-app-password-0123456789';
+// The app under test connects as the least-privilege runtime role, as in production.
+const runtimeUrl = new URL(E2E_DATABASE_URL);
+runtimeUrl.username = 'oneauth_app';
+runtimeUrl.password = E2E_APP_PASSWORD;
 
 export default defineConfig({
   testDir: 'tests/e2e',
@@ -25,6 +30,6 @@ export default defineConfig({
     url: 'http://localhost:3000/how-it-works',
     reuseExistingServer: false,
     timeout: 60_000,
-    env: { DATABASE_URL: E2E_DATABASE_URL, ONEAUTH_ORIGINS: 'http://localhost:3000' },
+    env: { DATABASE_URL: E2E_DATABASE_URL, ONEAUTH_RUNTIME_DATABASE_URL: runtimeUrl.toString(), ONEAUTH_ORIGINS: 'http://localhost:3000' },
   },
 });

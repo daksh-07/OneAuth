@@ -1,5 +1,5 @@
 import 'server-only';
-import { one, query, type Queryable } from './db';
+import { asUser, one, query, type Queryable } from './db';
 import { randomToken, sha256 } from './tokens';
 import type { Scope } from '../scopes';
 import type { RequestContext } from './events';
@@ -46,6 +46,14 @@ export async function createSession(
  */
 export async function validateSessionToken(token: string | undefined | null): Promise<SessionRecord | null> {
   if (!token || token.length > 128) return null;
+  const hash = sha256(token);
+  // Resolve the owner first (SECURITY DEFINER), then validate inside their tenant scope.
+  const owner = await one<{ uid: string | null }>(`select oneauth_resolve_session($1) as uid`, [hash]);
+  if (!owner?.uid) return null;
+  return asUser(owner.uid, () => validateInScope(hash));
+}
+
+async function validateInScope(hash: Buffer): Promise<SessionRecord | null> {
   const row = await one<SessionRecord>(
     `update sessions s
         set last_seen_at = now()
@@ -59,7 +67,7 @@ export async function validateSessionToken(token: string | undefined | null): Pr
         and u.status = 'active'
      returning s.id, s.user_id, s.device_id, s.kind, s.scopes, s.created_at, s.last_seen_at,
                s.expires_at, s.reauth_at, u.display_name, d.name as device_name, d.kind as device_kind`,
-    [sha256(token), IDLE_TIMEOUT],
+    [hash, IDLE_TIMEOUT],
   );
   if (row) {
     // Device last-seen is informational; coarse updates keep writes low.
@@ -80,25 +88,32 @@ export async function markReauthenticated(sessionId: string, client?: Queryable)
 }
 
 /** Revokes a session only if it belongs to userId. Returns false otherwise. */
-export async function revokeSession(userId: string, sessionId: string, reason: string, client?: Queryable): Promise<boolean> {
-  const rows = await query(
-    `update sessions set revoked_at = now(), revoke_reason = $3
-      where id = $1 and user_id = $2 and revoked_at is null returning id`,
-    [sessionId, userId, reason],
-    client,
-  );
-  return rows.length === 1;
+export async function revokeSession(userId: string, sessionId: string, reason: string): Promise<boolean> {
+  if (!/^[0-9a-f-]{36}$/i.test(sessionId)) return false;
+  return asUser(userId, async () => {
+    const rows = await query(
+      `update sessions set revoked_at = now(), revoke_reason = $3
+        where id = $1 and user_id = $2 and revoked_at is null returning id`,
+      [sessionId, userId, reason],
+    );
+    return rows.length === 1;
+  });
 }
 
 export async function revokeSessionByToken(
   token: string,
   reason: string,
 ): Promise<{ id: string; user_id: string; device_id: string } | null> {
-  return one(
-    `update sessions set revoked_at = now(), revoke_reason = $2
-      where token_hash = $1 and revoked_at is null
-     returning id, user_id, device_id`,
-    [sha256(token), reason],
+  const hash = sha256(token);
+  const owner = await one<{ uid: string | null }>(`select oneauth_resolve_session($1) as uid`, [hash]);
+  if (!owner?.uid) return null;
+  return asUser(owner.uid, () =>
+    one(
+      `update sessions set revoked_at = now(), revoke_reason = $2
+        where token_hash = $1 and revoked_at is null
+       returning id, user_id, device_id`,
+      [hash, reason],
+    ),
   );
 }
 
@@ -114,12 +129,12 @@ export interface SessionListRow {
 }
 
 export async function listActiveSessions(userId: string): Promise<SessionListRow[]> {
-  return query<SessionListRow>(
+  return asUser(userId, () => query<SessionListRow>(
     `select s.id, s.device_id, d.name as device_name, s.kind, s.scopes, s.created_at, s.last_seen_at, s.expires_at
        from sessions s join devices d on d.id = s.device_id
       where s.user_id = $1 and s.revoked_at is null and s.expires_at > now()
         and s.last_seen_at > now() - make_interval(secs => $2) and d.revoked_at is null
       order by s.last_seen_at desc`,
     [userId, IDLE_TIMEOUT],
-  );
+  ));
 }

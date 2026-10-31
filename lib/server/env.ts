@@ -1,4 +1,5 @@
 import 'server-only';
+import { createHmac } from 'node:crypto';
 import { parseOrigins } from '../origins';
 
 /**
@@ -10,8 +11,44 @@ export function databaseUrl(): string | undefined {
   return process.env.DATABASE_URL || undefined;
 }
 
+export const APP_DB_ROLE = 'oneauth_app';
+
+/**
+ * The connection the application runtime uses. Migrations use the owner
+ * connection (scripts/migrate.mjs); the runtime connects as the
+ * least-privilege `oneauth_app` role when its password is provisioned:
+ * - ONEAUTH_RUNTIME_DATABASE_URL, if set, is used as-is (local/CI);
+ * - otherwise, with ONEAUTH_DB_APP_PASSWORD, DATABASE_URL's host and database
+ *   are reused with the app role's credentials (works with Neon branches);
+ * - otherwise DATABASE_URL (owner). /api/health reports which is in use.
+ */
+export function runtimeDatabaseUrl(): string | undefined {
+  if (process.env.ONEAUTH_RUNTIME_DATABASE_URL) return process.env.ONEAUTH_RUNTIME_DATABASE_URL;
+  const base = databaseUrl();
+  const password = appRolePassword(base);
+  if (!base || !password) return base;
+  const url = new URL(base);
+  url.username = APP_DB_ROLE;
+  url.password = password;
+  return url.toString();
+}
+
+/**
+ * The runtime role's password: explicit (ONEAUTH_DB_APP_PASSWORD), or, with
+ * ONEAUTH_DB_APP_ROLE=derived, HMAC-derived from the owner password already in
+ * the environment so no person or tool ever handles it. Mirrored in
+ * scripts/pg-config.mjs (unit-tested to match).
+ */
+export function appRolePassword(ownerUrl = databaseUrl()): string | undefined {
+  if (process.env.ONEAUTH_DB_APP_PASSWORD) return process.env.ONEAUTH_DB_APP_PASSWORD;
+  if (process.env.ONEAUTH_DB_APP_ROLE !== 'derived' || !ownerUrl) return undefined;
+  const ownerPassword = decodeURIComponent(new URL(ownerUrl).password);
+  if (!ownerPassword) return undefined;
+  return createHmac('sha256', ownerPassword).update('oneauth/app-role-password/v1').digest('base64url');
+}
+
 export function isBackendConfigured(): boolean {
-  return Boolean(databaseUrl());
+  return Boolean(runtimeDatabaseUrl());
 }
 
 export const isProduction = process.env.NODE_ENV === 'production';

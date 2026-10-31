@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { query } from '@/lib/server/db';
+import { query } from '../helpers/admin';
 import { beginLogin, beginRegistration, finishLogin, finishRegistration } from '@/lib/server/webauthn';
 import { SoftAuthenticator } from '../helpers/soft-authenticator';
 import { createUser, ctx, ORIGIN } from '../helpers/fixtures';

@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 // Shared by the migration runner and (mirrored in) lib/server/db.ts.
 // Remote connections always verify the server certificate. Provide
 // DATABASE_CA_CERT (PEM) for providers whose certificates chain to a private CA.
@@ -13,4 +14,13 @@ export function pgConfig(connectionString, ca = process.env.DATABASE_CA_CERT) {
     connectionString: url.toString(),
     ssl: local ? undefined : { rejectUnauthorized: true, ...(ca ? { ca } : {}) },
   };
+}
+
+/** Mirrors appRolePassword() in lib/server/env.ts. */
+export function appRolePassword(ownerUrl = process.env.DATABASE_URL) {
+  if (process.env.ONEAUTH_DB_APP_PASSWORD) return process.env.ONEAUTH_DB_APP_PASSWORD;
+  if (process.env.ONEAUTH_DB_APP_ROLE !== 'derived' || !ownerUrl) return undefined;
+  const ownerPassword = decodeURIComponent(new URL(ownerUrl).password);
+  if (!ownerPassword) return undefined;
+  return createHmac('sha256', ownerPassword).update('oneauth/app-role-password/v1').digest('base64url');
 }

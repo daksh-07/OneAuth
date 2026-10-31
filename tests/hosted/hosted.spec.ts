@@ -22,8 +22,7 @@ async function newPhone(browser: Browser) {
 test('health: database migrated and origin configured', async ({ request }) => {
   const res = await request.get('/api/health');
   const body = await res.json();
-  expect(body).toMatchObject({ status: 'ok', database: 'ok', origins: 'configured' });
-  expect(body.migrations).toBeGreaterThanOrEqual(2);
+  expect(body).toMatchObject({ status: 'ok', database: 'ok', schema: 'current', origins: 'configured', runtime_role: 'least_privilege' });
 });
 
 test('registration with a passkey, secure cookies', async ({ browser }) => {

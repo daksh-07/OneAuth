@@ -7,5 +7,7 @@ export default async function setup() {
   await client.connect();
   await client.query('drop schema public cascade; create schema public;');
   await client.end();
-  execFileSync('node', ['scripts/migrate.mjs'], { env: { ...process.env, DATABASE_URL: url }, stdio: 'inherit' });
+  const env = { ...process.env, DATABASE_URL: url, ONEAUTH_DB_APP_PASSWORD: process.env.E2E_APP_PASSWORD ?? 'local-e2e-app-password-0123456789' };
+  execFileSync('node', ['scripts/migrate.mjs'], { env, stdio: 'inherit' });
+  execFileSync('node', ['scripts/provision-app-role.mjs'], { env, stdio: 'inherit' });
 }

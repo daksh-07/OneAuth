@@ -9,12 +9,17 @@ export async function GET() {
   const origins = configuredOrigins().length > 0 ? 'configured' : 'not_configured';
   if (!isBackendConfigured()) return NextResponse.json({ status: 'degraded', database: 'not_configured', origins }, { status: 503 });
   try {
-    const migrated = await one<{ exists: boolean }>(`select to_regclass('public.schema_migrations') is not null as exists`);
-    if (!migrated?.exists) return NextResponse.json({ status: 'degraded', database: 'not_migrated', origins }, { status: 503 });
-    const row = await one<{ n: number }>('select count(*)::int as n from schema_migrations');
+    // The runtime role can't read schema_migrations (by design); check the latest migration's object instead.
+    const role = await one<{ least: boolean; migrated: boolean }>(
+      `select (r.rolname = 'oneauth_app' and not r.rolsuper and not r.rolbypassrls) as least,
+              to_regprocedure('oneauth_resolve_session(bytea)') is not null as migrated
+         from pg_roles r where r.rolname = current_user`,
+    );
+    const runtimeRole = role?.least ? 'least_privilege' : 'owner';
+    const ok = origins === 'configured' && Boolean(role?.migrated);
     return NextResponse.json(
-      { status: origins === 'configured' ? 'ok' : 'degraded', database: 'ok', migrations: row?.n ?? 0, origins },
-      { status: origins === 'configured' ? 200 : 503 },
+      { status: ok ? 'ok' : 'degraded', database: 'ok', schema: role?.migrated ? 'current' : 'outdated', runtime_role: runtimeRole, origins },
+      { status: ok ? 200 : 503 },
     );
   } catch {
     return NextResponse.json({ status: 'degraded', database: 'unreachable', origins }, { status: 503 });

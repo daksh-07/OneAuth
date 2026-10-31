@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { query } from '@/lib/server/db';
+import { query } from '../helpers/admin';
 
 describe('database hardening', () => {
   it('enables row level security on every application table', async () => {
