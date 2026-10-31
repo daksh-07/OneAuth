@@ -21,7 +21,8 @@ export default defineConfig({
   ],
   webServer: {
     command: 'npx next start -p 3000',
-    url: 'http://localhost:3000/api/health',
+    // A public page: /api/health reports 503 until globalSetup (which runs after the server starts) has migrated the database.
+    url: 'http://localhost:3000/how-it-works',
     reuseExistingServer: false,
     timeout: 60_000,
     env: { DATABASE_URL: E2E_DATABASE_URL, ONEAUTH_ORIGINS: 'http://localhost:3000' },
