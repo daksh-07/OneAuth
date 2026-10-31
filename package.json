@@ -14,7 +14,8 @@
     "typecheck": "tsc --noEmit",
     "db:migrate": "node scripts/migrate.mjs",
     "test": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "vercel-build": "node scripts/vercel-build.mjs"
   },
   "dependencies": {
     "@simplewebauthn/browser": "^14.0.0",

@@ -8,6 +8,23 @@ export class BackendNotConfiguredError extends Error {
   }
 }
 
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
+
+/**
+ * Remote connections always verify the server certificate (mirrors
+ * scripts/pg-config.mjs). libpq ssl parameters are stripped so a connection
+ * string can't silently downgrade verification.
+ */
+export function pgConfig(connectionString: string, ca = process.env.DATABASE_CA_CERT): pg.PoolConfig {
+  const url = new URL(connectionString);
+  for (const p of ['sslmode', 'ssl', 'sslrootcert', 'sslcert', 'sslkey', 'uselibpqcompat']) url.searchParams.delete(p);
+  const local = LOCAL_HOSTS.has(url.hostname);
+  return {
+    connectionString: url.toString(),
+    ssl: local ? undefined : { rejectUnauthorized: true, ...(ca ? { ca } : {}) },
+  };
+}
+
 const globalForPool = globalThis as unknown as { __oneauthPool?: pg.Pool };
 
 function pool(): pg.Pool {
@@ -15,9 +32,11 @@ function pool(): pg.Pool {
   if (!url) throw new BackendNotConfiguredError();
   if (!globalForPool.__oneauthPool) {
     globalForPool.__oneauthPool = new pg.Pool({
-      connectionString: url,
-      max: Number(process.env.DATABASE_POOL_MAX ?? 5),
+      ...pgConfig(url),
+      // Serverless: keep few connections per instance and rely on the provider's pooler.
+      max: Number(process.env.DATABASE_POOL_MAX ?? 3),
       idleTimeoutMillis: 10_000,
+      connectionTimeoutMillis: 10_000,
     });
   }
   return globalForPool.__oneauthPool;
