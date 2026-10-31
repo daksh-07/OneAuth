@@ -1,5 +1,5 @@
 import 'server-only';
-import { one } from './db';
+import { one, query } from './db';
 
 export class RateLimitError extends Error {
   constructor(public retryAfterSeconds: number) {
@@ -19,6 +19,8 @@ export async function rateLimit(key: string, limit: number, windowSeconds: numbe
      returning count, window_start`,
     [key, windowSeconds],
   );
+  // Opportunistic cleanup (~1% of calls) keeps the table bounded without a cron job.
+  if (Math.random() < 0.01) await query(`delete from rate_limits where window_start < now() - interval '1 day'`);
   if (row && row.count > limit) {
     const retry = Math.max(1, Math.ceil((row.window_start.getTime() + windowSeconds * 1000 - Date.now()) / 1000));
     throw new RateLimitError(retry);

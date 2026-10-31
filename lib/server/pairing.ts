@@ -3,7 +3,7 @@ import { one, query, tx } from './db';
 import { UserFacingError } from './errors';
 import { recordEvent, type RequestContext } from './events';
 import { findOrCreateDevice } from './devices';
-import { createSession, isRecentlyReauthenticated, type SessionRecord } from './sessions';
+import { createSession, type SessionRecord } from './sessions';
 import { rateLimit } from './ratelimit';
 import { normalizeUserCode, randomToken, sha256, userCode } from './tokens';
 import { GRANT_DURATIONS, GRANTABLE_SCOPES, hasScope, isScope, type Scope } from '../scopes';
@@ -78,6 +78,7 @@ export async function getPairingStatusForRequester(secret: string | undefined) {
  * makes this single-use: a replayed or concurrent claim matches zero rows.
  */
 export async function claimPairing(secret: string, deviceKey: string | null, ctx: RequestContext) {
+  await rateLimit(`pair-claim:${ctx.ip ?? 'unknown'}`, 30, 10 * 60);
   return tx(async (c) => {
     const req = await one<PairingRow & { approver_user_id: string }>(
       `update device_pairing_requests set status = 'claimed', claimed_at = now()
@@ -110,7 +111,8 @@ export async function claimPairing(secret: string, deviceKey: string | null, ctx
       ctx,
       c,
     );
-    return { ...session, deviceKey: dev.deviceKey };
+    const owner = await one<{ display_name: string }>(`select display_name from users where id = $1`, [userId], c);
+    return { ...session, deviceKey: dev.deviceKey, displayName: owner!.display_name, kind };
   });
 }
 
@@ -210,9 +212,6 @@ export interface ApprovalInput {
 
 export async function approvePairing(session: SessionRecord, input: ApprovalInput, ctx: RequestContext) {
   assertCanApprove(session);
-  if (!isRecentlyReauthenticated(session)) {
-    throw new UserFacingError('reauth_required', 'Confirm it’s you with your passkey first.', 403);
-  }
   if (input.kind !== 'owned' && input.kind !== 'shared') throw new UserFacingError('invalid', 'Choose a device type.');
   const allowed = GRANTABLE_SCOPES[input.kind];
   const scopes = [...new Set(input.scopes)];
@@ -225,7 +224,26 @@ export async function approvePairing(session: SessionRecord, input: ApprovalInpu
   }
   const code = normalizeUserCode(input.confirmedCode);
 
+  if (!/^[0-9a-f-]{36}$/i.test(input.requestId)) throw new UserFacingError('not_pending', 'This request has expired or was already handled.', 409);
+
   return tx(async (c) => {
+    // Transaction binding: require a passkey assertion made by this session for
+    // this request within the last two minutes, and use it up.
+    const confirmation = await one(
+      `update webauthn_challenges set data = data || '{"used": true}'::jsonb
+        where id = (
+          select id from webauthn_challenges
+           where purpose = 'stepup' and session_id = $1 and data->>'pairingRequestId' = $2
+             and data->>'verified' = 'true' and not (data ? 'used')
+             and consumed_at > now() - interval '2 minutes'
+           order by consumed_at desc limit 1
+           for update)
+        returning id`,
+      [session.id, input.requestId],
+      c,
+    );
+    if (!confirmation) throw new UserFacingError('reauth_required', 'Confirm this approval with your passkey.', 403);
+
     const row = await one<PairingRow>(
       `select id, user_code, status, expires_at from device_pairing_requests where id = $1 for update`,
       [input.requestId],

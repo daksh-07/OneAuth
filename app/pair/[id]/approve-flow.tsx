@@ -42,6 +42,9 @@ export function ApproveFlow({ request, typedCode, config }: Props) {
   const [pending, setPending] = useState<'approve' | 'decline' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<Outcome>(null);
+  // Remote relay attacks usually come from another network, so ask for an explicit confirmation there.
+  const needsPresenceConfirm = request.sameNetwork !== true;
+  const [present, setPresent] = useState(false);
 
   const durationLabel = useMemo(() => config.durations[kind].find((d) => d.seconds === ttl)?.label, [config, kind, ttl]);
 
@@ -61,10 +64,14 @@ export function ApproveFlow({ request, typedCode, config }: Props) {
       setError('Choose the code shown on the other device first.');
       return;
     }
+    if (needsPresenceConfirm && !present) {
+      setError('Confirm that the device is in front of you.');
+      return;
+    }
     setError(null);
     setPending('approve');
     try {
-      await stepUp();
+      await stepUp(request.id);
       const res = await postJson<{ ok: boolean; reason?: string }>('/api/pairing/approve', {
         requestId: request.id,
         confirmedCode: code,
@@ -130,6 +137,9 @@ export function ApproveFlow({ request, typedCode, config }: Props) {
           ) : (
             <Badge>Network couldn’t be compared</Badge>
           )}
+          <p className="mt-2 text-[12px] leading-relaxed text-muted">
+            A matching network is a hint, not proof the device is near you. Phones on mobile data usually show as different.
+          </p>
         </div>
       </div>
 
@@ -221,6 +231,21 @@ export function ApproveFlow({ request, typedCode, config }: Props) {
           ))}
         </div>
       </fieldset>
+
+      {needsPresenceConfirm ? (
+        <label className="flex cursor-pointer gap-3 rounded-card border border-warning/40 bg-warning-soft p-4">
+          <input
+            type="checkbox"
+            checked={present}
+            onChange={(e) => setPresent(e.target.checked)}
+            className="mt-0.5 size-5 shrink-0 accent-[var(--accent)]"
+          />
+          <span className="text-sm leading-relaxed">
+            <span className="font-medium">The device is in front of me and I started this myself.</span>{' '}
+            <span className="text-muted">Don’t continue if a website, message or caller asked you to scan this.</span>
+          </span>
+        </label>
+      ) : null}
 
       {error ? (
         <p className="text-sm text-danger" role="alert">

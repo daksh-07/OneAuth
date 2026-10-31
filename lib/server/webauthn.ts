@@ -40,13 +40,13 @@ async function consumeChallenge(
   purpose: Purpose,
   origin: string,
   sessionId?: string,
-): Promise<{ challenge: string; user_id: string | null; data: Record<string, unknown> }> {
+): Promise<{ id: string; challenge: string; user_id: string | null; data: Record<string, unknown> }> {
   if (!/^[0-9a-f-]{36}$/i.test(id)) throw new UserFacingError('challenge_invalid', 'This request has expired. Please try again.');
-  const row = await one<{ challenge: string; user_id: string | null; data: Record<string, unknown> }>(
+  const row = await one<{ id: string; challenge: string; user_id: string | null; data: Record<string, unknown> }>(
     `update webauthn_challenges set consumed_at = now()
       where id = $1 and purpose = $2 and consumed_at is null and expires_at > now()
         and session_id is not distinct from $3
-     returning challenge, user_id, data`,
+     returning id, challenge, user_id, data`,
     [id, purpose, sessionId ?? null],
   );
   if (!row || row.data.origin !== origin) {
@@ -253,8 +253,16 @@ async function userCredentials(userId: string) {
   );
 }
 
-export async function beginStepUp(session: SessionRecord, origin: string) {
+/**
+ * Step-up verification. With `forPairing`, the verified assertion becomes a
+ * single-use confirmation of that specific pairing request (transaction
+ * binding), rather than a general "recently verified" window.
+ */
+export async function beginStepUp(session: SessionRecord, origin: string, forPairing?: string) {
   await rateLimit(`stepup:${session.id}`, 20, 15 * 60);
+  if (forPairing !== undefined && !/^[0-9a-f-]{36}$/i.test(forPairing)) {
+    throw new UserFacingError('invalid', 'Invalid request.');
+  }
   const creds = await userCredentials(session.user_id);
   const options = await generateAuthenticationOptions({
     rpID: rpIdFor(origin),
@@ -268,6 +276,7 @@ export async function beginStepUp(session: SessionRecord, origin: string) {
     origin,
     userId: session.user_id,
     sessionId: session.id,
+    data: forPairing ? { pairingRequestId: forPairing } : {},
   });
   return { challengeId, options };
 }
@@ -280,6 +289,8 @@ export async function finishStepUp(
   const ch = await consumeChallenge(input.challengeId, 'stepup', input.origin, session.id);
   await verifyAssertion(input.response, ch.challenge, input.origin, session.user_id);
   await markReauthenticated(session.id);
+  // Mark the challenge as successfully verified; a bound pairing approval consumes this marker.
+  await query(`update webauthn_challenges set data = data || '{"verified": true}'::jsonb where id = $1`, [ch.id]);
   await recordEvent({ type: 'auth.stepup', userId: session.user_id, deviceId: session.device_id, sessionId: session.id }, ctx);
 }
 

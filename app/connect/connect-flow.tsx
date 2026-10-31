@@ -13,7 +13,7 @@ type Phase =
   | { name: 'creating' }
   | { name: 'waiting'; id: string; code: string; expiresAt: string; qr: string; approveUrl: string }
   | { name: 'claiming' }
-  | { name: 'connected' }
+  | { name: 'connected'; displayName: string; kind: 'owned' | 'shared' }
   | { name: 'rejected' }
   | { name: 'expired' }
   | { name: 'error'; message: string };
@@ -25,16 +25,18 @@ export function ConnectFlow() {
   const claim = useCallback(async () => {
     setPhase({ name: 'claiming' });
     try {
-      await postJson('/api/pairing/claim');
-      setPhase({ name: 'connected' });
-      setTimeout(() => {
-        router.replace('/home');
-        router.refresh();
-      }, 1200);
+      const res = await postJson<{ displayName: string; kind: 'owned' | 'shared' }>('/api/pairing/claim');
+      setPhase({ name: 'connected', displayName: res.displayName, kind: res.kind });
     } catch (err) {
       setPhase({ name: 'error', message: err instanceof ApiError ? err.message : 'Could not finish connecting.' });
     }
-  }, [router]);
+  }, []);
+
+  async function notMine() {
+    await postJson('/api/auth/signout').catch(() => {});
+    router.replace('/');
+    router.refresh();
+  }
 
   const start = useCallback(async () => {
     setPhase({ name: 'creating' });
@@ -144,8 +146,27 @@ export function ConnectFlow() {
                 <CheckCircle2 className="size-7" />
               </span>
             }
-            title="This device is connected"
-            body="Opening your OneAuth…"
+            title={`Connected to ${phase.displayName}’s OneAuth`}
+            body={
+              phase.kind === 'shared'
+                ? 'This device has temporary access. Sign out when you’re done.'
+                : 'This device is now one of your trusted devices.'
+            }
+            action={
+              <div className="flex flex-col gap-2">
+                <Button
+                  onClick={() => {
+                    router.replace('/home');
+                    router.refresh();
+                  }}
+                >
+                  Continue
+                </Button>
+                <Button variant="ghost" onClick={notMine}>
+                  This isn’t my account
+                </Button>
+              </div>
+            }
           />
         ) : phase.name === 'rejected' ? (
           <Status

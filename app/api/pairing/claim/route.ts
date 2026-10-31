@@ -10,5 +10,6 @@ export const POST = jsonRoute(async () => {
   const result = await claimPairing(secret, await currentDeviceKey(), await requestContext());
   await persistSession(result);
   await clearCookie(COOKIE.pairing);
-  return { ok: true };
+  // Shown on the requesting screen so the user can spot being joined to someone else's account.
+  return { ok: true, displayName: result.displayName, kind: result.kind };
 });

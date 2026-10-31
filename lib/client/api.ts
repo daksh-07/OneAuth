@@ -61,15 +61,18 @@ export async function registerPasskey(path: string, body: Record<string, unknown
   return postJson<{ ok: true }>(`${path}/verify`, { challengeId, response, ...verifyBody });
 }
 
-export async function authenticatePasskey(path: string, verifyBody: Record<string, unknown> = {}) {
-  const { challengeId, options } = await postJson<Options<PublicKeyCredentialRequestOptionsJSON>>(`${path}/options`, {});
+export async function authenticatePasskey(path: string, verifyBody: Record<string, unknown> = {}, optionsBody: Record<string, unknown> = {}) {
+  const { challengeId, options } = await postJson<Options<PublicKeyCredentialRequestOptionsJSON>>(`${path}/options`, optionsBody);
   const response = await startAuthentication({ optionsJSON: options });
   return postJson<{ ok: true }>(`${path}/verify`, { challengeId, response, ...verifyBody });
 }
 
-/** Re-verifies the user with their passkey (step-up) before a sensitive action. */
-export function stepUp() {
-  return authenticatePasskey('/api/auth/stepup');
+/**
+ * Re-verifies the user with their passkey (step-up) before a sensitive action.
+ * Pass a pairing request ID to bind the verification to approving that request.
+ */
+export function stepUp(pairingRequestId?: string) {
+  return authenticatePasskey('/api/auth/stepup', {}, pairingRequestId ? { pairingRequestId } : {});
 }
 
 /** Runs fn; if the server asks for a fresh passkey check, performs one and retries once. */
