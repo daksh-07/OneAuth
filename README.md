@@ -15,7 +15,7 @@ npm run db:migrate                  # applies db/migrations/*.sql
 npm run dev                         # http://localhost:3000
 ```
 
-Passkeys need a secure context: `localhost` works; anything else must be HTTPS and listed in `ONEAUTH_ORIGINS`. Vercel deployment URLs are allowed automatically.
+Passkeys need a secure context: `localhost` works in development; any hosted origin must be HTTPS and listed explicitly in `ONEAUTH_ORIGINS`. Deployment URLs are never trusted implicitly. See [deployment](docs/deployment.md).
 
 ## Checks
 
@@ -24,7 +24,8 @@ Passkeys need a secure context: `localhost` works; anything else must be HTTPS a
 | `npm run typecheck` | TypeScript strict mode |
 | `npm run lint` | ESLint (Next core-web-vitals and TypeScript) |
 | `npm test` | Vitest: unit, contrast and Postgres integration tests (needs `TEST_DATABASE_URL` or a local `oneauth_test` DB) |
-| `npm run test:e2e` | Playwright: real passkey ceremonies via Chrome's virtual authenticator, two-device pairing, axe accessibility, screenshots (needs a built app and a local `oneauth_e2e` DB) |
+| `npm run test:e2e` | Playwright: real passkey ceremonies via Chrome's virtual authenticator, two-device pairing, axe accessibility, screenshots; plus iPhone/WebKit, Pixel/Chromium, Firefox and WebKit cross-browser checks (needs a built app and a local `oneauth_e2e` DB) |
+| `npx playwright test -c playwright.hosted.config.ts` | The same journeys against a deployed preview (see [deployment](docs/deployment.md)) |
 
 ## Documentation
 
@@ -32,3 +33,5 @@ Passkeys need a secure context: `localhost` works; anything else must be HTTPS a
 - [Technical architecture](docs/architecture.md) · [Security model and threat model](docs/security-model.md)
 - [Design system](docs/design-system.md) · [Roadmap](docs/roadmap.md) · [Implementation checklist](docs/checklist.md)
 - [Known limitations and dependencies](docs/limitations.md) · [Competitive positioning](docs/competitive-landscape.md)
+- [Deployment and environments](docs/deployment.md) · [Device and browser testing](docs/device-testing.md)
+- Proposal: [OneAuth Cloud encryption](docs/proposals/cloud-encryption.md) (draft, pending review)

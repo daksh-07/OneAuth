@@ -59,7 +59,7 @@ See `db/migrations/0001_foundation.sql`. Tables: `users`, `user_profiles`, `auth
 
 Planned tables, added only with their features: `files`, `folders`, `encrypted_vault_items`, `connected_providers`, `storage_usage`.
 
-Row Level Security: not used, because the app connects as a single privileged role and enforces ownership in the domain layer (tested for cross-user access). If the database is ever exposed through PostgREST or Supabase client libraries, RLS policies become mandatory first.
+Row Level Security: enabled on every table with **no policies** (migration 0002), with `PUBLIC`, `anon` and `authenticated` privileges revoked. The app connects as the table owner, which bypasses RLS, and enforces ownership in the domain layer (tested for cross-user access). Any other role, such as a provider's HTTP data API, is denied everything. The app role must own the tables or have `BYPASSRLS`.
 
 ## Pairing state machine
 
@@ -74,9 +74,9 @@ pending ──approve(code ok, step-up)──▶ approved ──claim(secret, on
 ## Deployment
 
 - Vercel project `oneauth` (team `dakshgolani5-4632`), Git-connected to `daksh-07/OneAuth`. Preview deployments come from branches.
-- Required env: `DATABASE_URL`. Optional: `ONEAUTH_ORIGINS`, `DATABASE_POOL_MAX`.
-- Run migrations explicitly (`npm run db:migrate`) against each environment. They never run automatically during builds.
-- Without `DATABASE_URL` the app still builds and serves public pages. Sign-up, sign-in and pairing show an honest "not available on this deployment" state, and `/api/health` returns 503.
+- Required env: `DATABASE_URL` and `ONEAUTH_ORIGINS` (explicit WebAuthn origins; the first is canonical, and other hosts redirect to it). Optional: `DATABASE_URL_UNPOOLED`, `DATABASE_CA_CERT`, `DATABASE_POOL_MAX`. See [deployment](deployment.md).
+- Migrations run automatically **only** for Vercel Preview builds (`scripts/vercel-build.mjs`); production migrations are run deliberately with `npm run db:migrate`.
+- Without `DATABASE_URL` the app still builds and serves public pages. Sign-up, sign-in and pairing show an honest "not available on this deployment" state, and `/api/health` returns 503 with `database` and `origins` status (never their values).
 
 ## Observability (current and next)
 

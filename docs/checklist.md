@@ -25,12 +25,18 @@ Legend: ✅ implemented and covered by automated tests · 🟡 implemented, part
 - ✅ No approval from paired or shared sessions (`pairing.test.ts`)
 - ✅ One-time claim, concurrency (`pairing.test.ts`)
 - ✅ Device revocation kills sessions; BOLA (`pairing.test.ts`, e2e)
+- ✅ Approval bound to a single-use, request-specific passkey confirmation (`pairing.test.ts`, mutation-checked)
+- ✅ Presence confirmation when networks differ; joined-account display with back-out (e2e)
 - ✅ Temporary session UI banner and server-side denial (e2e)
 - ◻︎ Proximity-bound pairing (native)
 - ◻︎ Push-based approval (native)
 
 ## Web security
-- ✅ Nonce CSP present (e2e)
+- ✅ Nonce CSP present (e2e; verified on Vercel)
+- ✅ Explicit origin allow-list, wildcard rejection, canonical redirect (unit, e2e; redirect verified on Vercel)
+- ✅ Previous session revoked when a browser signs in again
+- ✅ RLS enabled and API roles revoked (`database.test.ts`)
+- ✅ TLS verification enforced for remote databases (unit)
 - ✅ Cross-origin POST rejected (e2e)
 - ✅ Open-redirect guard (unit)
 - ✅ Rate limiting (`auth.test.ts`)
@@ -41,9 +47,10 @@ Legend: ✅ implemented and covered by automated tests · 🟡 implemented, part
 - ✅ Contrast of all token pairs, both themes (unit)
 - ✅ Screenshots at 390, 820 and 1440px, light and dark (e2e `visual.spec.ts`, reviewed manually)
 - ✅ No console errors on core journeys (e2e)
+- ✅ 24px minimum touch targets and no horizontal overflow on public and app screens (e2e)
 - 🟡 Keyboard navigation: native controls, Radix focus traps, skip link; no automated tab-order test yet
 - 🟡 Reduced motion: CSS rule present; not asserted by a test
-- ◻︎ Safari and Firefox runs (only Chromium in CI so far)
+- 🟡 Safari and Firefox engines: Playwright WebKit and Firefox run rendering, a11y, targets and pairing-screen checks; passkey ceremonies are Chromium-only
 - ◻︎ Real-device testing (iPhone, Android)
 - ◻︎ Screen-reader pass (VoiceOver, TalkBack)
 - ◻︎ Slow-network and offline scenarios
@@ -51,6 +58,8 @@ Legend: ✅ implemented and covered by automated tests · 🟡 implemented, part
 ## Platform
 - ✅ Migrations runner
 - ✅ Health endpoint
-- ◻︎ Production database provisioned
+- ◻︎ Preview database provisioned (blocked: see limitations)
+- ◻︎ Production database (deliberately not yet)
 - ◻︎ Error monitoring
-- 🟡 CI workflow (`.github/workflows/ci.yml`; added, first run pending)
+- ✅ CI workflow (typecheck, lint, unit and integration, build, e2e)
+- 🟡 Hosted preview suite (`playwright.hosted.config.ts`; passes locally against a production build; blocked on the preview database)

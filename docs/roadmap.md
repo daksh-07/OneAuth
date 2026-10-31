@@ -14,10 +14,11 @@ Each phase ships only with passing tests and acceptance criteria. Nothing is des
 
 ## Next milestone (highest priority)
 
-**Provision production infrastructure and get an external review of the identity core.**
-1. Provision Postgres (Neon via the Vercel Marketplace, or Supabase) for Preview and Production, set `DATABASE_URL`, and run migrations.
-2. Verify the preview end-to-end on real iPhone and Android hardware (passkeys and cross-device QR).
-3. Add error monitoring, `security.txt`, a privacy policy and retention jobs.
-4. Commission a security review of `lib/server/{webauthn,sessions,pairing}.ts`.
+**Hosted, verified identity core ready for controlled testing.**
+1. ✅ Explicit origin pinning, bound approvals, RLS lock-down, verified TLS, cross-browser coverage, hosted test suite.
+2. ◻︎ Preview database (owner action: see [deployment](deployment.md)). The preview build then migrates automatically.
+3. ◻︎ Run the hosted suite and the [physical device matrix](device-testing.md).
+4. ◻︎ Error monitoring, `security.txt`, privacy policy, retention job.
+5. ◻︎ Independent security review of the identity core.
 
-Then **Phase 3 design**: a written key-management and recovery spec (per-device X25519 keys, a user master key wrapped per device, recovery-kit and social-recovery options without a staff override), reviewed before any implementation.
+Then **Phase 3:** review the [Cloud encryption proposal](proposals/cloud-encryption.md). Its SAS-derived pairing codes (§4) are worth building first, because they strengthen pairing even before Cloud.

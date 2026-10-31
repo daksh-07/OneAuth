@@ -17,7 +17,9 @@
 - "Same network" is a heuristic (same IPv4, or same IPv6 /64), not a security control.
 - Passkey availability across devices depends on the user's platform (iCloud Keychain, Google Password Manager, etc.).
 
-## Infrastructure dependencies (blocking for a live preview)
-- **PostgreSQL**: none is provisioned. The Vercel project has no `DATABASE_URL`, so deployments render public pages and an honest "not available on this deployment" state for sign-up, sign-in and pairing.
-- **Vercel deployment protection**: SSO protection is on for preview URLs. Testers need Vercel team access, or a protection bypass must be configured.
-- **WebAuthn RP ID**: passkeys are bound to the hostname. Passkeys created on a preview URL won't work on the production domain. Choose the long-term domain before inviting real users.
+## Infrastructure dependencies
+- **Preview database:** not provisioned yet. Supabase refused a third free project for this account, and Neon needs a one-click Marketplace install by the account owner. See [deployment](deployment.md#what-you-need-to-do-one-of-these). Until then, the preview shows "not available on this deployment" for sign-up, sign-in and pairing.
+- **Production database:** deliberately not created.
+- **Vercel deployment protection:** SSO protects previews. Testers need team access; automated hosted tests need a Protection Bypass for Automation secret.
+- **WebAuthn RP ID:** passkeys are bound to the hostname. The preview uses the branch alias; passkeys made there won't work on the production domain. Choose the long-term domain before inviting real users.
+- **Physical devices:** not yet tested on real phones and computers. See [device testing](device-testing.md).
