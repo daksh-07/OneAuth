@@ -52,6 +52,10 @@ export function SigninForm({ configured, next }: { configured: boolean; next: st
         {!pending ? <Fingerprint /> : null}
         Sign in with a passkey
       </Button>
+      <p className="text-[13px] leading-relaxed text-muted">
+        No passkey on this computer? Your browser can usually use the one on your phone: choose the option to use a phone or
+        tablet when prompted.
+      </p>
       <div className="flex items-center gap-3 text-[12px] text-muted" aria-hidden="true">
         <span className="h-px flex-1 bg-line" />
         or

@@ -16,7 +16,7 @@ export default async function ConnectDevicePage() {
   }
   return (
     <div className="mx-auto max-w-2xl space-y-6">
-      <Link href="/devices" className="inline-flex items-center gap-1 text-sm text-muted hover:text-fg">
+      <Link href="/devices" className="-ml-1 inline-flex min-h-9 items-center gap-1 rounded-control px-1 text-sm text-muted hover:text-fg">
         <ChevronLeft className="size-4" aria-hidden="true" />
         Devices
       </Link>

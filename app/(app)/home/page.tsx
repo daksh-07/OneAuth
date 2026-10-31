@@ -14,6 +14,7 @@ import { listEvents } from '@/lib/server/events';
 import { listPasskeys } from '@/lib/server/account';
 import { listActiveSessions } from '@/lib/server/sessions';
 import { hasScope } from '@/lib/scopes';
+import { canonicalOrigin } from '@/lib/server/env';
 
 export const metadata: Metadata = { title: 'Home' };
 
@@ -31,6 +32,7 @@ export default async function HomePage() {
     canSecurity ? listActiveSessions(session.user_id) : null,
   ]);
   const firstName = session.display_name.split(/\s+/)[0];
+  const connectUrl = `${(canonicalOrigin() ?? '').replace(/^https?:\/\//, '')}/connect`;
   const temporary = devices?.filter((d) => d.kind === 'shared').length ?? 0;
 
   return (
@@ -72,8 +74,9 @@ export default async function HomePage() {
             <div className="flex-1">
               <h2 className="text-[17px] font-semibold">Connect your next device</h2>
               <p className="mt-1 text-sm leading-relaxed text-muted">
-                Open <span className="font-mono text-[13px] text-fg">/connect</span> on a laptop or tablet, then approve it from
-                here. You choose what it can see and how long it stays connected.
+                On the other device, open{' '}
+                <span className="font-mono text-[13px] break-all text-fg">{connectUrl}</span>, then approve it from here. You choose
+                what it can see and how long it stays connected.
               </p>
             </div>
             <ButtonLink href="/devices/connect" variant="secondary">

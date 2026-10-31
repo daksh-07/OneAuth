@@ -23,6 +23,9 @@ export function formatRelative(date: Date, now = Date.now()): string {
   return rtf ? rtf.format(value, unit) : `${value} ${unit}s`;
 }
 
+// Server-rendered placeholder of similar width to a relative time, to avoid layout shift on hydration.
+const SHORT_DATE = new Intl.DateTimeFormat('en-AU', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+
 // One shared ticking clock for every timestamp on the page.
 const listeners = new Set<() => void>();
 let now = typeof window === 'undefined' ? 0 : Date.now();
@@ -58,7 +61,7 @@ export function RelativeTime({ value, className }: { value: string | Date; class
   const iso = date.toISOString();
   return (
     <time dateTime={iso} title={current ? date.toLocaleString() : iso} className={className} suppressHydrationWarning>
-      {current ? formatRelative(date, current) : iso.slice(0, 16).replace('T', ' ') + ' UTC'}
+      {current ? formatRelative(date, current) : SHORT_DATE.format(date)}
     </time>
   );
 }

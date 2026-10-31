@@ -42,7 +42,7 @@ export default async function MarketingLayout({ children }: { children: React.Re
             <Wordmark className="scale-90 opacity-80" />
             <span>Early preview. Not yet ready for sensitive data.</span>
           </div>
-          <nav aria-label="Footer" className="flex gap-5">
+          <nav aria-label="Footer" className="flex flex-wrap gap-x-5 gap-y-1 [&_a]:inline-flex [&_a]:min-h-8 [&_a]:items-center">
             <Link href="/how-it-works" className="hover:text-fg">
               Security model
             </Link>

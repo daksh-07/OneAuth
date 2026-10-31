@@ -177,8 +177,18 @@ export function ApproveFlow({ request, typedCode, config }: Props) {
       <fieldset>
         <legend className="mb-3 text-sm font-semibold">2. Whose device is it?</legend>
         <div className="grid grid-cols-2 gap-2" role="radiogroup">
-          <KindOption active={kind === 'shared'} onSelect={() => chooseKind('shared')} title="Shared or temporary" body="Hotel, friend’s or public device" />
-          <KindOption active={kind === 'owned'} onSelect={() => chooseKind('owned')} title="My own device" body="A computer or tablet you own" />
+          <KindOption
+            active={kind === 'shared'}
+            onSelect={() => chooseKind('shared')}
+            title="Shared or temporary"
+            body="Hotel, friend’s or public device. Up to 24 hours, view-only."
+          />
+          <KindOption
+            active={kind === 'owned'}
+            onSelect={() => chooseKind('owned')}
+            title="My own device"
+            body="A computer or tablet you own. Up to 30 days, renewable."
+          />
         </div>
       </fieldset>
 
@@ -289,7 +299,7 @@ function OutcomeView({ outcome, name, duration }: { outcome: Exclude<Outcome, nu
       icon: <CheckCircle2 className="size-7 text-success" />,
       bg: 'bg-success-soft',
       title: 'Approved',
-      body: `${name} can now finish connecting. Its access ends after ${duration}, or sooner if you revoke it.`,
+      body: `Check the screen of ${name}: it should now say it’s connected to your OneAuth. Its access ends after ${duration}, or sooner if you disconnect it.`,
     },
     declined: { icon: <ShieldAlert className="size-7 text-muted" />, bg: 'bg-sunken', title: 'Request declined', body: 'Nothing was shared with that device.' },
     mismatch: {
