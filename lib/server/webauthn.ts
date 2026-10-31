@@ -129,6 +129,23 @@ async function insertAuthenticator(
   c: Queryable,
   nickname = 'Passkey',
 ) {
+  try {
+    await insertAuthenticatorRow(userId, info, c, nickname);
+  } catch (err) {
+    // credential_id is unique: a passkey can belong to exactly one account.
+    if ((err as { code?: string }).code === '23505') {
+      throw new UserFacingError('passkey_exists', 'This passkey is already registered to an account.', 409);
+    }
+    throw err;
+  }
+}
+
+async function insertAuthenticatorRow(
+  userId: string,
+  info: Extract<Awaited<ReturnType<typeof verifyRegistrationResponse>>, { verified: true }>['registrationInfo'],
+  c: Queryable,
+  nickname: string,
+) {
   await query(
     `insert into authenticators (user_id, credential_id, public_key, counter, transports, device_type, backed_up, aaguid, nickname)
      values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
