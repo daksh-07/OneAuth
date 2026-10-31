@@ -197,3 +197,24 @@ test('pages on a non-canonical host redirect to the configured origin', async ({
   const api = await request.post('http://127.0.0.1:3000/api/auth/login/options', { headers: { origin: 'http://127.0.0.1:3000' } });
   expect(api.status()).toBe(403);
 });
+
+test('a requester on a different network needs an explicit in-person confirmation', async ({ browser }) => {
+  const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, extraHTTPHeaders: { 'x-real-ip': '198.51.100.9' } });
+  const owner = await phone.newPage();
+  await addVirtualAuthenticator(owner);
+  await signUp(owner, 'Net Check');
+  await finishOnboarding(owner);
+  const laptopCtx = await browser.newContext({ extraHTTPHeaders: { 'x-real-ip': '203.0.113.77' } });
+  const laptop = await newDevice(laptopCtx);
+  await owner.goto(laptop.approveUrl);
+  await expect(owner.getByText('Different network from this phone')).toBeVisible();
+  await owner.getByText(laptop.code, { exact: true }).click();
+  await owner.getByRole('button', { name: 'Approve with passkey' }).click();
+  await expect(owner.getByText('Confirm that the device is in front of you.')).toBeVisible();
+  await owner.getByRole('checkbox', { name: /in front of me/ }).check();
+  await owner.getByRole('button', { name: 'Approve with passkey' }).click();
+  await expect(owner.getByRole('heading', { name: 'Approved' })).toBeVisible();
+  await expect(laptop.page.getByText('Connected to Net Check’s OneAuth')).toBeVisible({ timeout: 15000 });
+  await phone.close();
+  await laptopCtx.close();
+});
