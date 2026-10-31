@@ -48,8 +48,8 @@ export async function signIn(user: TestUser, opts: { shared?: boolean; deviceKey
   );
 }
 
-export async function stepUpSession(user: TestUser, session: SessionRecord) {
-  const { challengeId, options } = await beginStepUp(session, ORIGIN);
+export async function stepUpSession(user: TestUser, session: SessionRecord, pairingRequestId?: string) {
+  const { challengeId, options } = await beginStepUp(session, ORIGIN, pairingRequestId);
   await finishStepUp(session, { challengeId, response: user.authenticator.authenticate(options, ORIGIN), origin: ORIGIN }, ctx());
   return (await validateSessionToken(user.token))!;
 }

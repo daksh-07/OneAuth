@@ -3,12 +3,17 @@ import { query } from '@/lib/server/db';
 import { approvePairing, claimPairing, createPairingRequest, getPairingStatusForRequester, lookupPairingForApprover, rejectPairing } from '@/lib/server/pairing';
 import { validateSessionToken } from '@/lib/server/sessions';
 import { revokeDevice, listDevices } from '@/lib/server/devices';
-import { createUser, ctx, signIn, stepUpSession } from '../helpers/fixtures';
+import { createUser, ctx, signIn, stepUpSession, type TestUser } from '../helpers/fixtures';
+
+/** A passkey assertion bound to approving this specific request (what the UI does). */
+async function confirmFor(user: TestUser, requestId: string) {
+  return stepUpSession(user, await user.session(), requestId);
+}
 
 async function approvedRequest(opts: { kind?: 'owned' | 'shared'; scopes?: string[]; ttl?: number } = {}) {
   const owner = await createUser('Owner');
   const req = await createPairingRequest(ctx('203.0.113.50'));
-  const session = await owner.session();
+  const session = await confirmFor(owner, req.id);
   const result = await approvePairing(
     session,
     { requestId: req.id, confirmedCode: req.code, kind: opts.kind ?? 'shared', scopes: opts.scopes ?? ['profile:read'], ttlSeconds: opts.ttl ?? 3600 },
@@ -49,26 +54,56 @@ describe('pairing request', () => {
 });
 
 describe('approval', () => {
-  it('requires a recent passkey check', async () => {
+  it('requires a passkey confirmation bound to this exact request', async () => {
     const owner = await createUser();
-    await query(`update sessions set reauth_at = now() - interval '10 minutes'`);
     const req = await createPairingRequest(ctx());
+    const other = await createPairingRequest(ctx());
     const input = { requestId: req.id, confirmedCode: req.code, kind: 'shared' as const, scopes: ['profile:read'], ttlSeconds: 3600 };
+    // A fresh general sign-in is not enough.
     await expect(approvePairing(await owner.session(), input, ctx())).rejects.toMatchObject({ code: 'reauth_required' });
-    const fresh = await stepUpSession(owner, await owner.session());
-    expect((await approvePairing(fresh, input, ctx())).ok).toBe(true);
+    // A confirmation for a different request is not enough.
+    await expect(approvePairing(await confirmFor(owner, other.id), input, ctx())).rejects.toMatchObject({ code: 'reauth_required' });
+    expect((await approvePairing(await confirmFor(owner, req.id), input, ctx())).ok).toBe(true);
+  });
+
+  it('uses each confirmation once and rejects stale ones', async () => {
+    const owner = await createUser();
+    const a = await createPairingRequest(ctx());
+    const s = await confirmFor(owner, a.id);
+    await query(`update webauthn_challenges set consumed_at = now() - interval '3 minutes' where purpose = 'stepup'`);
+    await expect(
+      approvePairing(s, { requestId: a.id, confirmedCode: a.code, kind: 'shared', scopes: [], ttlSeconds: 3600 }, ctx()),
+    ).rejects.toMatchObject({ code: 'reauth_required' });
+
+    const b = await createPairingRequest(ctx());
+    const s2 = await confirmFor(owner, b.id);
+    await approvePairing(s2, { requestId: b.id, confirmedCode: 'AAAA-AAAA', kind: 'shared', scopes: [], ttlSeconds: 3600 }, ctx());
+    const used = await query(`select 1 from webauthn_challenges where data->>'pairingRequestId' = $1 and data ? 'used'`, [b.id]);
+    expect(used).toHaveLength(1);
+  });
+
+  it('a confirmation from another user’s session does not count', async () => {
+    const owner = await createUser('Owner');
+    const intruder = await createUser('Intruder');
+    const req = await createPairingRequest(ctx());
+    await confirmFor(owner, req.id);
+    await expect(
+      approvePairing(await intruder.session(), { requestId: req.id, confirmedCode: req.code, kind: 'shared', scopes: [], ttlSeconds: 3600 }, ctx()),
+    ).rejects.toMatchObject({ code: 'reauth_required' });
   });
 
   it('cancels the request when the wrong code is picked', async () => {
     const owner = await createUser();
     const req = await createPairingRequest(ctx());
-    const s = await owner.session();
+    const s = await confirmFor(owner, req.id);
     const res = await approvePairing(s, { requestId: req.id, confirmedCode: 'AAAA-AAAA', kind: 'shared', scopes: [], ttlSeconds: 3600 }, ctx());
     expect(res).toEqual({ ok: false, reason: 'code_mismatch' });
     expect((await getPairingStatusForRequester(req.secret))?.status).toBe('rejected');
+    // Even with a fresh confirmation, a cancelled request stays cancelled.
     await expect(
-      approvePairing(s, { requestId: req.id, confirmedCode: req.code, kind: 'shared', scopes: [], ttlSeconds: 3600 }, ctx()),
+      approvePairing(await confirmFor(owner, req.id), { requestId: req.id, confirmedCode: req.code, kind: 'shared', scopes: [], ttlSeconds: 3600 }, ctx()),
     ).rejects.toMatchObject({ code: 'not_pending' });
+    expect(s.id).toBeTruthy();
   });
 
   it('never grants a shared device management or account scopes', async () => {
@@ -76,7 +111,7 @@ describe('approval', () => {
     const req = await createPairingRequest(ctx());
     for (const scope of ['devices:manage', 'security:manage', 'security:read', 'admin:everything']) {
       await expect(
-        approvePairing(await owner.session(), { requestId: req.id, confirmedCode: req.code, kind: 'shared', scopes: [scope], ttlSeconds: 3600 }, ctx()),
+        approvePairing(await confirmFor(owner, req.id), { requestId: req.id, confirmedCode: req.code, kind: 'shared', scopes: [scope], ttlSeconds: 3600 }, ctx()),
       ).rejects.toMatchObject({ code: 'invalid_scope' });
     }
   });
@@ -85,7 +120,7 @@ describe('approval', () => {
     const owner = await createUser();
     const req = await createPairingRequest(ctx());
     await expect(
-      approvePairing(await owner.session(), { requestId: req.id, confirmedCode: req.code, kind: 'owned', scopes: ['security:manage'], ttlSeconds: 7 * 86400 }, ctx()),
+      approvePairing(await confirmFor(owner, req.id), { requestId: req.id, confirmedCode: req.code, kind: 'owned', scopes: ['security:manage'], ttlSeconds: 7 * 86400 }, ctx()),
     ).rejects.toMatchObject({ code: 'invalid_scope' });
   });
 
@@ -93,16 +128,17 @@ describe('approval', () => {
     const owner = await createUser();
     const req = await createPairingRequest(ctx());
     await expect(
-      approvePairing(await owner.session(), { requestId: req.id, confirmedCode: req.code, kind: 'shared', scopes: [], ttlSeconds: 30 * 86400 }, ctx()),
+      approvePairing(await confirmFor(owner, req.id), { requestId: req.id, confirmedCode: req.code, kind: 'shared', scopes: [], ttlSeconds: 30 * 86400 }, ctx()),
     ).rejects.toMatchObject({ code: 'invalid_duration' });
   });
 
   it('cannot approve an expired request', async () => {
     const owner = await createUser();
     const req = await createPairingRequest(ctx());
+    const confirmed = await confirmFor(owner, req.id);
     await query(`update device_pairing_requests set expires_at = now() - interval '1 second', created_at = now() - interval '6 minutes'`);
     await expect(
-      approvePairing(await owner.session(), { requestId: req.id, confirmedCode: req.code, kind: 'shared', scopes: [], ttlSeconds: 3600 }, ctx()),
+      approvePairing(confirmed, { requestId: req.id, confirmedCode: req.code, kind: 'shared', scopes: [], ttlSeconds: 3600 }, ctx()),
     ).rejects.toMatchObject({ code: 'not_pending' });
   });
 

@@ -80,7 +80,9 @@ test('connect a temporary device from a phone, then revoke it', async ({ browser
   await owner.getByRole('button', { name: 'Approve with passkey' }).click();
   await expect(owner.getByRole('heading', { name: 'Approved' })).toBeVisible();
 
-  await laptop.page.waitForURL('**/home', { timeout: 15_000 });
+  await expect(laptop.page.getByText('Connected to Sam Rivera’s OneAuth')).toBeVisible({ timeout: 15_000 });
+  await laptop.page.getByRole('button', { name: 'Continue' }).click();
+  await laptop.page.waitForURL('**/home');
   await expect(laptop.page.getByText('Temporary access on this device.')).toBeVisible();
   await expect(laptop.page.getByRole('heading', { name: 'Welcome back, Sam' })).toBeVisible();
   // A temporary device can't reach account management.
@@ -155,9 +157,43 @@ test('approve by typing the code on the phone', async ({ browser }) => {
   await owner.getByRole('radio', { name: /My own device/ }).click();
   await owner.getByRole('button', { name: 'Approve with passkey' }).click();
   await expect(owner.getByRole('heading', { name: 'Approved' })).toBeVisible();
-  await laptop.page.waitForURL('**/home', { timeout: 15_000 });
+  await expect(laptop.page.getByText('This device is now one of your trusted devices.')).toBeVisible({ timeout: 15_000 });
+  await laptop.page.getByRole('button', { name: 'Continue' }).click();
+  await laptop.page.waitForURL('**/home');
   await expect(laptop.page.getByText('Temporary access on this device.')).toHaveCount(0);
   await expect(laptop.page.getByRole('link', { name: 'Devices' }).first()).toBeVisible();
   await phone.close();
   await laptopCtx.close();
+});
+
+test('a joined device can back out if it was connected to the wrong account', async ({ browser }) => {
+  const phone = await browser.newContext();
+  const owner = await phone.newPage();
+  await addVirtualAuthenticator(owner);
+  await signUp(owner, 'Someone Else');
+  await finishOnboarding(owner);
+  const laptopCtx = await browser.newContext();
+  const laptop = await newDevice(laptopCtx);
+  await owner.goto(laptop.approveUrl);
+  await owner.getByText(laptop.code, { exact: true }).click();
+  await owner.getByRole('button', { name: 'Approve with passkey' }).click();
+  await expect(owner.getByRole('heading', { name: 'Approved' })).toBeVisible();
+  await expect(laptop.page.getByText('Connected to Someone Else’s OneAuth')).toBeVisible({ timeout: 15_000 });
+  await laptop.page.getByRole('button', { name: 'This isn’t my account' }).click();
+  await laptop.page.waitForURL((u) => u.pathname === '/');
+  await laptop.page.goto('/home');
+  await expect(laptop.page).toHaveURL(/\/signin/);
+  await phone.close();
+  await laptopCtx.close();
+});
+
+test('pages on a non-canonical host redirect to the configured origin', async ({ request }) => {
+  const res = await request.get('http://127.0.0.1:3000/signin?next=%2Fdevices', { maxRedirects: 0 });
+  expect(res.status()).toBe(307);
+  // Locally `next start` treats localhost:3000 as its own origin and relativises the
+  // Location; on Vercel it stays absolute (verified against the hosted preview).
+  expect(res.headers()['location']).toMatch(/^(http:\/\/localhost:3000)?\/signin\?next=%2Fdevices$/);
+  // API calls from a non-canonical origin are refused rather than redirected.
+  const api = await request.post('http://127.0.0.1:3000/api/auth/login/options', { headers: { origin: 'http://127.0.0.1:3000' } });
+  expect(api.status()).toBe(403);
 });

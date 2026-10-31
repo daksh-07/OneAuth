@@ -17,13 +17,13 @@ jobs:
           POSTGRES_DB: oneauth_test
         ports: ['5432:5432']
         options: >-
-          --health-cmd "pg_isready -U oneauth" --health-interval 5s --health-timeout 5s --health-retries 10
+          --health-cmd "pg_isready -U oneauth -d oneauth_test" --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       TEST_DATABASE_URL: postgres://oneauth:oneauth@localhost:5432/oneauth_test
       E2E_DATABASE_URL: postgres://oneauth:oneauth@localhost:5432/oneauth_e2e
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -35,7 +35,7 @@ jobs:
       - run: PGPASSWORD=oneauth psql -h localhost -U oneauth -d oneauth_test -c 'create database oneauth_e2e'
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         if: always()
         with:
           name: playwright-results
