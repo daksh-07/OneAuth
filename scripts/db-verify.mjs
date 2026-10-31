@@ -20,17 +20,20 @@ await client.connect();
 const problems = [];
 const q = async (sql, params = []) => (await client.query(sql, params)).rows;
 try {
+  // Client-side TLS evidence: pg_stat_ssl only describes the pooler→Postgres hop
+  // when connecting through a pooler, so check our own socket instead.
+  const socket = client.connection.stream;
+  const clientTls = { encrypted: Boolean(socket.encrypted), authorized: socket.authorized === true, protocol: socket.getProtocol?.() ?? null };
   const [who] = await q(`select current_user as role, current_database() as db, version() as version,
-                               (select ssl from pg_stat_ssl where pid = pg_backend_pid()) as ssl,
-                               (select version from pg_stat_ssl where pid = pg_backend_pid()) as tls_version`);
+                               (select ssl from pg_stat_ssl where pid = pg_backend_pid()) as backend_ssl`);
   const [attrs] = await q(`select rolsuper, rolbypassrls, rolcreaterole, rolcreatedb from pg_roles where rolname = current_user`);
   const memberOf = (await q(`select b.rolname from pg_auth_members m join pg_roles b on b.oid = m.roleid
                               join pg_roles r on r.oid = m.member where r.rolname = current_user order by 1`)).map((r) => r.rolname);
-  console.log(`[db-verify] role=${who.role} db=${who.db} ssl=${who.ssl} tls=${who.tls_version}`);
+  console.log(`[db-verify] role=${who.role} db=${who.db} client_tls=${clientTls.encrypted} cert_verified=${clientTls.authorized} protocol=${clientTls.protocol} backend_ssl=${who.backend_ssl}`);
   console.log(`[db-verify] server=${who.version.split(' ').slice(0, 2).join(' ')}`);
   console.log(`[db-verify] role attributes: superuser=${attrs.rolsuper} bypassrls=${attrs.rolbypassrls} createrole=${attrs.rolcreaterole} createdb=${attrs.rolcreatedb} memberOf=[${memberOf.join(',')}]`);
   const local = ['localhost', '127.0.0.1', '::1'].includes(new URL(url).hostname);
-  if (!who.ssl && !local) problems.push('remote connection is not using TLS');
+  if (!local && !(clientTls.encrypted && clientTls.authorized)) problems.push('remote connection is not using verified TLS');
 
   const tables = await q(`select c.relname, pg_get_userbyid(c.relowner) as owner, c.relrowsecurity as rls, c.relforcerowsecurity as force_rls,
                                  (select count(*) from pg_policy p where p.polrelid = c.oid)::int as policies
