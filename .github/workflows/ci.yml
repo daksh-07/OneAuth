@@ -33,7 +33,7 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: PGPASSWORD=oneauth psql -h localhost -U oneauth -d oneauth_test -c 'create database oneauth_e2e'
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install --with-deps chromium webkit firefox
       - run: npm run test:e2e
       - uses: actions/upload-artifact@v5
         if: always()

@@ -1,5 +1,5 @@
 import { test } from '@playwright/test';
-import { addVirtualAuthenticator, finishOnboarding, signUp } from './helpers';
+import { addVirtualAuthenticator, expectNoHorizontalOverflow, expectTouchTargets, finishOnboarding, signUp } from './helpers';
 
 /** Captures screens at phone, tablet and desktop sizes in both themes for manual review. */
 const SIZES = [
@@ -40,6 +40,8 @@ for (const scheme of ['light', 'dark'] as const) {
         await page.goto(path);
         await page.waitForLoadState('networkidle');
         await page.screenshot({ path: `test-results/screens/app${path.replace(/\//g, '-')}-${s.name}-${scheme}.png`, fullPage: true });
+        await expectNoHorizontalOverflow(page);
+        if (s.name === 'mobile') await expectTouchTargets(page);
       }
     }
     await ctx.close();

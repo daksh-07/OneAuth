@@ -11,7 +11,13 @@ export default defineConfig({
   globalSetup: './tests/e2e/global-setup.ts',
   use: { baseURL: 'http://localhost:3000', trace: 'retain-on-failure' },
   projects: [
-    { name: 'desktop-chromium', use: { ...devices['Desktop Chrome'] } },
+    // Full suite, including real passkey ceremonies via Chrome's virtual authenticator.
+    { name: 'desktop-chromium', use: { ...devices['Desktop Chrome'] }, testIgnore: /cross-browser/ },
+    // Engines without a virtual authenticator: everything except the passkey ceremony.
+    { name: 'iphone-webkit', use: { ...devices['iPhone 15'] }, testMatch: /cross-browser/ },
+    { name: 'android-chromium', use: { ...devices['Pixel 7'] }, testMatch: /cross-browser/ },
+    { name: 'desktop-firefox', use: { ...devices['Desktop Firefox'] }, testMatch: /cross-browser/ },
+    { name: 'desktop-webkit', use: { ...devices['Desktop Safari'] }, testMatch: /cross-browser/ },
   ],
   webServer: {
     command: 'npx next start -p 3000',

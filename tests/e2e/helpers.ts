@@ -55,3 +55,29 @@ export async function newDevice(context: BrowserContext) {
   await expect(page.getByTestId('pairing-code')).toHaveText(data.code);
   return { page, ...data };
 }
+
+export async function expectNoHorizontalOverflow(page: Page) {
+  const { scroll, width } = await page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, width: window.innerWidth }));
+  expect(scroll).toBeLessThanOrEqual(width);
+}
+
+/** Interactive controls should be at least 24×24 CSS px (WCAG 2.2 target size, minimum). */
+export async function expectTouchTargets(page: Page) {
+  const small = await page.evaluate(() =>
+    [...document.querySelectorAll<HTMLElement>('main a, main button, main input, main label:has(input), header a, header button, nav a, nav button')]
+      .filter((el) => {
+        const r = el.getBoundingClientRect();
+        const style = getComputedStyle(el);
+        if (r.width === 0 || r.height === 0 || style.visibility === 'hidden') return false;
+        // Inline text links inside sentences are exempt under WCAG 2.5.8.
+        if (el.tagName === 'A' && style.display === 'inline') return false;
+        if (el.classList.contains('sr-only')) return false;
+        // A checkbox or radio inside a label is hit through the whole label, which is measured separately.
+        if (el.tagName === 'INPUT' && el.closest('label')) return false;
+        return r.width < 24 || r.height < 24;
+      })
+      .map((el) => `${el.tagName} "${(el.textContent || el.getAttribute('aria-label') || '').trim().slice(0, 30)}" ${Math.round(el.getBoundingClientRect().width)}x${Math.round(el.getBoundingClientRect().height)}`),
+  );
+  expect(small).toEqual([]);
+}
+
