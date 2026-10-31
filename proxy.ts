@@ -1,7 +1,27 @@
 import { NextResponse, type NextRequest } from 'next/server';
+import { parseOrigins } from './lib/origins';
 
 /** Per-request nonce Content-Security-Policy. */
 export function proxy(request: NextRequest) {
+  // Passkeys are bound to one hostname. Send page visits on any other hostname
+  // (e.g. a per-deployment Vercel URL) to the configured canonical origin.
+  const origins = parseOrigins(process.env.ONEAUTH_ORIGINS);
+  const host = request.headers.get('host');
+  const proto = request.headers.get('x-forwarded-proto')?.split(',')[0]?.trim() || request.nextUrl.protocol.replace(':', '');
+  const here = host ? `${proto}://${host}` : request.nextUrl.origin;
+  if (
+    origins.length > 0 &&
+    !origins.includes(here) &&
+    (request.method === 'GET' || request.method === 'HEAD') &&
+    !request.nextUrl.pathname.startsWith('/api/') &&
+    !(process.env.NODE_ENV !== 'production' && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(here))
+  ) {
+    const target = new URL(request.nextUrl.pathname + request.nextUrl.search, origins[0]);
+    // Built by hand: NextResponse.redirect() may relativise a Location that matches
+    // the server's own idea of its origin, which would loop on the wrong host.
+    return new NextResponse(null, { status: 307, headers: { location: target.toString(), 'cache-control': 'no-store' } });
+  }
+
   const nonce = Buffer.from(crypto.randomUUID()).toString('base64');
   const isDev = process.env.NODE_ENV === 'development';
   const isHttps = request.nextUrl.protocol === 'https:';
