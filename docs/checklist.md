@@ -36,7 +36,11 @@ Legend: ✅ implemented and covered by automated tests · 🟡 implemented, part
 - ✅ Explicit origin allow-list, wildcard rejection, canonical redirect (unit, e2e; redirect verified on Vercel)
 - ✅ Previous session revoked when a browser signs in again
 - ✅ RLS enabled and API roles revoked (`database.test.ts`)
-- ✅ TLS verification enforced for remote databases (unit)
+- ✅ TLS verification enforced for remote databases (unit; verified on Neon: TLSv1.3, certificate authorised)
+- ✅ No string-interpolated SQL (static test, mutation-checked)
+- ✅ WebAuthn negatives: RP ID mismatch, tampered signature, malformed, expired, replayed, duplicate credential (`webauthn-negative.test.ts`)
+- ✅ Optional `ONEAUTH_RP_ID` parent-domain validation (unit)
+- ◻︎ Database-enforced tenant isolation (RLS with a non-owner runtime role): application-enforced today; see security model
 - ✅ Cross-origin POST rejected (e2e)
 - ✅ Open-redirect guard (unit)
 - ✅ Rate limiting (`auth.test.ts`)
@@ -58,8 +62,8 @@ Legend: ✅ implemented and covered by automated tests · 🟡 implemented, part
 ## Platform
 - ✅ Migrations runner
 - ✅ Health endpoint
-- ◻︎ Preview database provisioned (blocked: see limitations)
+- ✅ Preview database (Neon, Sydney, Preview-only variables; migrations and `db-verify` run in every preview build)
 - ◻︎ Production database (deliberately not yet)
 - ◻︎ Error monitoring
 - ✅ CI workflow (typecheck, lint, unit and integration, build, e2e)
-- 🟡 Hosted preview suite (`playwright.hosted.config.ts`; passes locally against a production build; blocked on the preview database)
+- ✅ Hosted preview suite against Vercel + Neon: passkey registration, sign-in and sign-out, replay, malformed and cross-origin rejection, pairing, bound approval, temporary scope, claim replay, revocation, cross-user isolation, HTTP tampering, cleanup

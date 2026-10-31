@@ -33,5 +33,5 @@ Passkeys need a secure context: `localhost` works in development; any hosted ori
 - [Technical architecture](docs/architecture.md) · [Security model and threat model](docs/security-model.md)
 - [Design system](docs/design-system.md) · [Roadmap](docs/roadmap.md) · [Implementation checklist](docs/checklist.md)
 - [Known limitations and dependencies](docs/limitations.md) · [Competitive positioning](docs/competitive-landscape.md)
-- [Deployment and environments](docs/deployment.md) · [Device and browser testing](docs/device-testing.md)
+- [Deployment and environments](docs/deployment.md) · [Production domain and RP ID](docs/production-domain.md) · [Device and browser testing](docs/device-testing.md)
 - Proposal: [OneAuth Cloud encryption](docs/proposals/cloud-encryption.md) (draft, pending review)

@@ -18,8 +18,8 @@
 - Passkey availability across devices depends on the user's platform (iCloud Keychain, Google Password Manager, etc.).
 
 ## Infrastructure dependencies
-- **Preview database:** not provisioned yet. Supabase refused a third free project for this account, and Neon needs a one-click Marketplace install by the account owner. See [deployment](deployment.md#what-you-need-to-do-one-of-these). Until then, the preview shows "not available on this deployment" for sign-up, sign-in and pairing.
-- **Production database:** deliberately not created.
-- **Vercel deployment protection:** SSO protects previews. Testers need team access; automated hosted tests need a Protection Bypass for Automation secret.
-- **WebAuthn RP ID:** passkeys are bound to the hostname. The preview uses the branch alias; passkeys made there won't work on the production domain. Choose the long-term domain before inviting real users.
+- **Preview database:** Neon (Free, Sydney), Preview-only variables. The store-level connection still lists Production (owner action in `deployment.md`).
+- **Production database and domain:** deliberately not created. See [production-domain.md](production-domain.md).
+- **Tenant isolation:** enforced in the application, not by Postgres RLS (the Neon runtime role owns the tables and has `BYPASSRLS`). See the security model.
+- **Vercel deployment protection:** SSO protects previews. The hosted suite uses an automation bypass secret that must be rotated and stored in GitHub Actions secrets.
 - **Physical devices:** not yet tested on real phones and computers. See [device testing](device-testing.md).

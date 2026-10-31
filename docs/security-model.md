@@ -13,6 +13,8 @@ This describes what is implemented. It has **not** been independently reviewed. 
 - Discoverable credentials (`residentKey: required`). Attestation `none`.
 - Signature counter regression is rejected and logged (`auth.signin_failed`). Many synced passkeys always report 0, so this only catches cloned *counting* authenticators.
 - The returned `userHandle` must match the credential's user.
+- A credential ID can belong to exactly one account. Re-registering one under a new account returns 409 and creates nothing (integration-tested).
+- RP ID mismatch, tampered signatures, malformed responses, expired and replayed challenges are rejected (integration-tested). Replayed and malformed assertions are also rejected on the hosted preview.
 - Challenges are server-generated and stored. They're consumed atomically once, are valid for 5 minutes, and are bound to purpose and origin; step-up and add-passkey challenges are also bound to the requesting session. A challenge is consumed *before* verification, so a failed attempt can't be retried with the same challenge.
 
 ## Relying-party origin
@@ -59,11 +61,18 @@ OneAuth can't make a compromised computer safe. On a borrowed device with malwar
 - Open redirect: `next=` must be a same-site path (unit-tested). The canonical redirect target comes only from configuration.
 - Rate limits, held in Postgres so they work across instances: registration 10 per 15 minutes per IP; login options 30 per 15 minutes per IP; step-up 20 per 15 minutes per session; pairing creation 20 per 10 minutes per IP; claims 30 per 10 minutes per IP; code lookup 10 per 10 minutes per user. IP comes from `x-real-ip`, set by Vercel; it can be spoofed off-platform.
 
-## Database
-- The app connects only from the server, as the table owner.
-- Migration `0002` enables row-level security on every table, revokes all privileges from `PUBLIC`, and revokes access from Supabase's `anon` and `authenticated` roles if they exist. This is defence in depth in case a provider exposes the schema over HTTP. Integration-tested.
-- TLS: remote connections always verify the server certificate. `sslmode` parameters in the URL are stripped so they can't downgrade it, and `DATABASE_CA_CERT` supports private CAs.
-- Migrations run automatically **only** for Vercel Preview builds, using an advisory lock and preferring an unpooled URL. Production migrations are a manual step.
+## Database: what's actually enforced
+Measured on the Neon preview database by `scripts/db-verify.mjs` during the Vercel build:
+- The runtime role is `neondb_owner`. It **owns every table**, has **`BYPASSRLS`**, and is a member of `neon_superuser`. On Vercel the same credentials exist at build time and at runtime.
+- Consequently, **row-level security doesn't isolate tenants** for OneAuth's own queries. `FORCE ROW LEVEL SECURITY` wouldn't help either, because it doesn't apply to `BYPASSRLS` roles. A `SET ROLE` to a weaker role would be undone by `RESET ROLE` under SQL injection.
+- **Tenant isolation is enforced by the application layer:** every query is scoped by the session's `user_id` in its `WHERE` clause; every entry point checks scopes. It's verified by:
+  - integration BOLA tests;
+  - the hosted suite, where user B tampers with their own server-action requests to target user A's device. The server refuses, and A's export shows no change;
+  - a static test that fails if any SQL is built by string interpolation.
+- What RLS (migration `0002`) does provide: every table has RLS enabled with no policies, and `PUBLIC`, `anon` and `authenticated` privileges are revoked. **Any other role is denied** (verified: no other grantees on application tables).
+- TLS: verified client-side on Neon: TLSv1.3, certificate chain authorised. `sslmode` in URLs can't downgrade it.
+- Migrations run on a direct (unpooled) connection under an advisory lock. Re-runs are idempotent (verified on a second preview build). Production builds refuse to run against a database without `ONEAUTH_DATABASE_ENV=production`.
+- **To get database-enforced isolation later:** create a separate `NOBYPASSRLS` login role for the runtime with DML-only grants; keep owner credentials out of the runtime (migrations in a separate CI job); and add per-user policies driven by a transaction-local `oneauth.user_id`, with `SECURITY DEFINER` functions for the pre-authentication lookups (session token, credential ID, pairing secret). Tracked as a hardening item; it needs owner-provisioned credentials.
 
 ## Account deletion and data
 - Deletion requires a fresh passkey assertion and typed confirmation. It cascades every user-owned row, including security events, and ends every session.
