@@ -275,7 +275,6 @@ async function userCredentials(userId: string) {
  * binding), rather than a general "recently verified" window.
  */
 async function beginStepUpInScope(session: SessionRecord, origin: string, forPairing?: string) {
-  await rateLimit(`stepup:${session.id}`, 20, 15 * 60);
   if (forPairing !== undefined && !/^[0-9a-f-]{36}$/i.test(forPairing)) {
     throw new UserFacingError('invalid', 'Invalid request.');
   }
@@ -384,8 +383,10 @@ async function removePasskeyInScope(session: SessionRecord, authenticatorId: str
 
 // ---------------------------------------------------------------- tenant-scoped entry points
 
-export const beginStepUp = (session: SessionRecord, origin: string, forPairing?: string) =>
-  asUser(session.user_id, () => beginStepUpInScope(session, origin, forPairing));
+export const beginStepUp = async (session: SessionRecord, origin: string, forPairing?: string) => {
+  await rateLimit(`stepup:${session.id}`, 20, 15 * 60);
+  return asUser(session.user_id, () => beginStepUpInScope(session, origin, forPairing));
+};
 export const finishStepUp = (...args: Parameters<typeof finishStepUpInScope>) =>
   asUser(args[0].user_id, () => finishStepUpInScope(...args));
 export const beginAddPasskey = (session: SessionRecord, origin: string) =>

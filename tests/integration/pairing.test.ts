@@ -12,12 +12,13 @@ async function confirmFor(user: TestUser, requestId: string) {
 
 async function approvedRequest(opts: { kind?: 'owned' | 'shared'; scopes?: string[]; ttl?: number } = {}) {
   const owner = await createUser('Owner');
+  // Requester and approver on the same network unless a test says otherwise.
   const req = await createPairingRequest(ctx('203.0.113.50'));
   const session = await confirmFor(owner, req.id);
   const result = await approvePairing(
     session,
     { requestId: req.id, confirmedCode: req.code, kind: opts.kind ?? 'shared', scopes: opts.scopes ?? ['profile:read'], ttlSeconds: opts.ttl ?? 3600 },
-    ctx(),
+    ctx('203.0.113.50'),
   );
   return { owner, req, session, result };
 }
@@ -219,5 +220,75 @@ describe('revocation', () => {
     expect(await revokeDevice(bob.userId, aliceDevice, (await bob.session()).id, ctx())).toBe(false);
     expect(await validateSessionToken(alice.token)).not.toBeNull();
     expect((await listDevices(bob.userId)).map((d) => d.id)).not.toContain(aliceDevice);
+  });
+});
+
+describe('remote (different-network) requests', () => {
+  it('require typing the code instead of picking from three', async () => {
+    const owner = await createUser();
+    const req = await createPairingRequest(ctx('198.51.100.20'));
+    const remote = await lookupPairingForApprover(await owner.session(), { id: req.id }, ctx('203.0.113.10'));
+    expect(remote).toMatchObject({ sameNetwork: false, requireTypedCode: true, codeChoices: null });
+    const local = await lookupPairingForApprover(await owner.session(), { id: req.id }, ctx('198.51.100.20'));
+    expect(local).toMatchObject({ sameNetwork: true, requireTypedCode: false });
+    expect(local!.codeChoices).toHaveLength(3);
+  });
+
+  it('treat an unknown network as remote', async () => {
+    const owner = await createUser();
+    const req = await createPairingRequest({ ip: null, userAgent: null });
+    expect(await lookupPairingForApprover(await owner.session(), { id: req.id }, ctx())).toMatchObject({ requireTypedCode: true });
+  });
+
+  it('can never be granted device management or more than 7 days, enforced by the server', async () => {
+    const owner = await createUser();
+    const remoteIp = ctx('198.51.100.20');
+    const here = ctx('203.0.113.10');
+    for (const attempt of [
+      { kind: 'owned' as const, scopes: ['profile:read', 'devices:manage'], ttlSeconds: 7 * 86400 },
+      { kind: 'owned' as const, scopes: ['profile:read'], ttlSeconds: 30 * 86400 },
+    ]) {
+      const req = await createPairingRequest(remoteIp);
+      await expect(
+        approvePairing(await confirmFor(owner, req.id), { requestId: req.id, confirmedCode: req.code, ...attempt }, here),
+      ).rejects.toMatchObject({ code: 'remote_limit', status: 403 });
+      expect((await getPairingStatusForRequester(req.secret))?.status).toBe('pending');
+    }
+    const ok = await createPairingRequest(remoteIp);
+    const res = await approvePairing(
+      await confirmFor(owner, ok.id),
+      { requestId: ok.id, confirmedCode: ok.code, kind: 'owned', scopes: ['profile:read', 'devices:read'], ttlSeconds: 7 * 86400 },
+      here,
+    );
+    expect(res.ok).toBe(true);
+  });
+});
+
+describe('approval races and abuse', () => {
+  it('approves a request at most once under concurrent approvals', async () => {
+    const owner = await createUser();
+    const req = await createPairingRequest(ctx('203.0.113.10'));
+    // Two independent confirmations for the same request, then race two approvals.
+    const s1 = await confirmFor(owner, req.id);
+    const s2 = await confirmFor(owner, req.id);
+    const input = { requestId: req.id, confirmedCode: req.code, kind: 'shared' as const, scopes: ['profile:read'], ttlSeconds: 3600 };
+    const results = await Promise.allSettled([approvePairing(s1, input, ctx('203.0.113.10')), approvePairing(s2, input, ctx('203.0.113.10'))]);
+    const ok = results.filter((r) => r.status === 'fulfilled' && (r.value as { ok: boolean }).ok);
+    expect(ok).toHaveLength(1);
+    const rejected = results.find((r) => r.status === 'rejected') as PromiseRejectedResult;
+    expect(rejected.reason).toMatchObject({ code: 'not_pending' });
+    const approvals = await query(`select 1 from security_events where type = 'pairing.approved'`);
+    expect(approvals).toHaveLength(1);
+  });
+
+  it('rate-limits approval attempts per user', async () => {
+    const owner = await createUser();
+    const s = await owner.session();
+    for (let i = 0; i < 10; i++) {
+      await approvePairing(s, { requestId: '00000000-0000-4000-8000-000000000000', confirmedCode: 'x', kind: 'shared', scopes: [], ttlSeconds: 3600 }, ctx()).catch(() => {});
+    }
+    await expect(
+      approvePairing(s, { requestId: '00000000-0000-4000-8000-000000000000', confirmedCode: 'x', kind: 'shared', scopes: [], ttlSeconds: 3600 }, ctx()),
+    ).rejects.toHaveProperty('retryAfterSeconds');
   });
 });

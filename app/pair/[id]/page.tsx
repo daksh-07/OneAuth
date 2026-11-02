@@ -6,7 +6,7 @@ import { ButtonLink } from '@/components/ui/button';
 import { Notice } from '@/components/ui/notice';
 import { getSession } from '@/lib/server/auth';
 import { requestContext } from '@/lib/server/request';
-import { lookupPairingForApprover } from '@/lib/server/pairing';
+import { lookupPairingForApprover, REMOTE_LIMITS } from '@/lib/server/pairing';
 import { UserFacingError } from '@/lib/server/errors';
 import { normalizeUserCode } from '@/lib/server/tokens';
 import { DEFAULT_SCOPES, FUTURE_CAPABILITIES, GRANT_DURATIONS, GRANTABLE_SCOPES, SCOPES } from '@/lib/scopes';
@@ -57,6 +57,7 @@ export default async function PairPage({ params, searchParams }: { params: Promi
           defaults: DEFAULT_SCOPES,
           durations: GRANT_DURATIONS,
           future: FUTURE_CAPABILITIES.map((f) => ({ label: f.label, note: f.note })),
+          remote: req.requireTypedCode ? REMOTE_LIMITS : null,
         }}
       />
     );

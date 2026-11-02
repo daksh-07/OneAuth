@@ -213,7 +213,14 @@ test('a requester on a different network needs an explicit in-person confirmatio
   const laptop = await newDevice(laptopCtx);
   await owner.goto(laptop.approveUrl);
   await expect(owner.getByText('Different network from this phone')).toBeVisible();
-  await owner.getByText(laptop.code, { exact: true }).click();
+  // No 1-in-3 choice on a different network: the code must be typed.
+  await expect(owner.locator('label:has(input[name="code"])')).toHaveCount(0);
+  await owner.getByLabel(/type the code you can see/).fill(laptop.code);
+  // Device management is unavailable for a remote request, even as an owned device.
+  await owner.getByRole('radio', { name: /My own device/ }).click();
+  await expect(owner.getByRole('checkbox', { name: 'Manage devices' })).toBeDisabled();
+  await expect(owner.getByText('30 days', { exact: true })).toHaveCount(0);
+  await owner.getByRole('radio', { name: /Shared or temporary/ }).click();
   await owner.getByRole('button', { name: 'Approve with passkey' }).click();
   await expect(owner.getByText('Confirm that the device is in front of you.')).toBeVisible();
   await owner.getByRole('checkbox', { name: /in front of me/ }).check();

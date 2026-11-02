@@ -21,6 +21,7 @@ interface Props {
     expiresAt: string;
     sameNetwork: boolean | null;
     codeChoices: string[] | null;
+    requireTypedCode: boolean;
   };
   typedCode: string | null;
   config: {
@@ -29,6 +30,7 @@ interface Props {
     defaults: Record<Kind, string[]>;
     durations: Record<Kind, { seconds: number; label: string }[]>;
     future: { label: string; note: string }[];
+    remote: { forbiddenScopes: string[]; maxOwnedTtl: number } | null;
   };
 }
 
@@ -36,6 +38,10 @@ type Outcome = null | 'approved' | 'declined' | 'mismatch' | 'expired';
 
 export function ApproveFlow({ request, typedCode, config }: Props) {
   const [code, setCode] = useState<string | null>(typedCode);
+  const [typed, setTyped] = useState('');
+  const remote = config.remote;
+  const blockedScope = (s: string) => Boolean(remote?.forbiddenScopes.includes(s));
+  const blockedTtl = (k: Kind, seconds: number) => Boolean(remote && k === 'owned' && seconds > remote.maxOwnedTtl);
   const [kind, setKind] = useState<Kind>('shared');
   const [scopes, setScopes] = useState<string[]>(config.defaults.shared);
   const [ttl, setTtl] = useState<number>(config.durations.shared[1].seconds);
@@ -51,17 +57,18 @@ export function ApproveFlow({ request, typedCode, config }: Props) {
   function chooseKind(k: Kind) {
     setKind(k);
     setScopes(config.defaults[k]);
-    setTtl(k === 'owned' ? config.durations.owned[1].seconds : config.durations.shared[1].seconds);
+    setTtl(k === 'owned' ? (remote ? config.durations.owned[0].seconds : config.durations.owned[1].seconds) : config.durations.shared[1].seconds);
   }
 
   function toggleScope(s: string) {
-    if (s === 'profile:read') return;
+    if (s === 'profile:read' || blockedScope(s)) return;
     setScopes((cur) => (cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s]));
   }
 
   async function approve() {
-    if (!code) {
-      setError('Choose the code shown on the other device first.');
+    const confirmed = typedCode ?? (request.requireTypedCode ? typed : code);
+    if (!confirmed || (request.requireTypedCode && confirmed.replace(/[^0-9a-z]/gi, '').length !== 8)) {
+      setError(request.requireTypedCode ? 'Type the 8-character code shown on the other device.' : 'Choose the code shown on the other device first.');
       return;
     }
     if (needsPresenceConfirm && !present) {
@@ -74,15 +81,17 @@ export function ApproveFlow({ request, typedCode, config }: Props) {
       await stepUp(request.id);
       const res = await postJson<{ ok: boolean; reason?: string }>('/api/pairing/approve', {
         requestId: request.id,
-        confirmedCode: code,
+        confirmedCode: confirmed,
         kind,
         scopes,
         ttlSeconds: ttl,
       });
       setOutcome(res.ok ? 'approved' : 'mismatch');
     } catch (err) {
-      if ((err as { code?: string }).code === 'not_pending') setOutcome('expired');
-      else setError(isCancellation(err) ? 'Approval cancelled. Nothing was shared.' : passkeyErrorMessage(err));
+      const errCode = (err as { code?: string }).code;
+      if (errCode === 'not_pending') setOutcome('expired');
+      else if (errCode === 'remote_limit') setError((err as Error).message);
+      else if (errCode !== 'remote_limit') setError(isCancellation(err) ? 'Approval cancelled. Nothing was shared.' : passkeyErrorMessage(err));
     } finally {
       setPending(null);
     }
@@ -155,6 +164,23 @@ export function ApproveFlow({ request, typedCode, config }: Props) {
             <CheckCircle2 className="size-4 text-success" aria-hidden="true" />
             You entered <span className="font-mono font-medium text-fg">{typedCode}</span>
           </p>
+        ) : request.requireTypedCode ? (
+          <div className="space-y-2">
+            <label htmlFor="typed-code" className="block text-[13px] text-muted">
+              Because this device isn’t on your network, type the code you can see on its screen.
+            </label>
+            <input
+              id="typed-code"
+              value={typed}
+              onChange={(e) => setTyped(e.target.value.toUpperCase())}
+              placeholder="XXXX-XXXX"
+              autoComplete="off"
+              autoCapitalize="characters"
+              spellCheck={false}
+              maxLength={12}
+              className="h-12 w-full rounded-control border border-line bg-surface px-3.5 text-center font-mono text-[18px] tracking-[0.12em] focus:border-accent focus:ring-4 focus:ring-accent/15 focus:outline-none"
+            />
+          </div>
         ) : (
           <div className="grid gap-2 sm:grid-cols-3">
             {request.codeChoices?.map((c) => (
@@ -171,7 +197,7 @@ export function ApproveFlow({ request, typedCode, config }: Props) {
             ))}
           </div>
         )}
-        <p className="text-[13px] text-muted">Picking the wrong code cancels the request.</p>
+        <p className="text-[13px] text-muted">A wrong code cancels the request.</p>
       </fieldset>
 
       <fieldset>
@@ -197,18 +223,20 @@ export function ApproveFlow({ request, typedCode, config }: Props) {
         <ul className="divide-y divide-line rounded-card border border-line bg-surface">
           {config.grantable[kind].map((s) => {
             const locked = s === 'profile:read';
+            const blocked = blockedScope(s);
             return (
               <li key={s}>
-                <label className={cn('flex items-center gap-3 px-4 py-3', locked ? 'cursor-default' : 'cursor-pointer')}>
+                <label className={cn('flex items-center gap-3 px-4 py-3', locked || blocked ? 'cursor-default' : 'cursor-pointer', blocked && 'text-muted')}>
                   <input
                     type="checkbox"
-                    checked={scopes.includes(s)}
-                    disabled={locked}
+                    checked={scopes.includes(s) && !blocked}
+                    disabled={locked || blocked}
                     onChange={() => toggleScope(s)}
                     className="size-4 accent-[var(--accent)]"
                   />
                   <span className="flex-1 text-sm">{config.scopes[s]}</span>
                   {locked ? <span className="text-[12px] text-muted">Always included</span> : null}
+                  {blocked ? <span className="text-[12px]">Only on your network</span> : null}
                 </label>
               </li>
             );
@@ -227,19 +255,24 @@ export function ApproveFlow({ request, typedCode, config }: Props) {
       <fieldset>
         <legend className="mb-3 text-sm font-semibold">4. For how long?</legend>
         <div className="flex flex-wrap gap-2">
-          {config.durations[kind].map((d) => (
-            <label
-              key={d.seconds}
-              className={cn(
-                'cursor-pointer rounded-full border px-4 py-2 text-sm transition-colors',
-                ttl === d.seconds ? 'border-accent bg-accent-soft font-medium text-accent-text' : 'border-line bg-surface hover:border-line-strong',
-              )}
-            >
-              <input type="radio" name="ttl" className="sr-only" checked={ttl === d.seconds} onChange={() => setTtl(d.seconds)} />
-              {d.label}
-            </label>
-          ))}
+          {config.durations[kind]
+            .filter((d) => !blockedTtl(kind, d.seconds))
+            .map((d) => (
+              <label
+                key={d.seconds}
+                className={cn(
+                  'cursor-pointer rounded-full border px-4 py-2 text-sm transition-colors',
+                  ttl === d.seconds ? 'border-accent bg-accent-soft font-medium text-accent-text' : 'border-line bg-surface hover:border-line-strong',
+                )}
+              >
+                <input type="radio" name="ttl" className="sr-only" checked={ttl === d.seconds} onChange={() => setTtl(d.seconds)} />
+                {d.label}
+              </label>
+            ))}
         </div>
+        {remote && kind === 'owned' ? (
+          <p className="mt-2 text-[13px] text-muted">Longer access is available when the device is on the same network as this phone.</p>
+        ) : null}
       </fieldset>
 
       {needsPresenceConfirm ? (

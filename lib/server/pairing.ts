@@ -3,6 +3,7 @@ import { asUser, one, query, tx } from './db';
 import { UserFacingError } from './errors';
 import { recordEvent, type RequestContext } from './events';
 import { findOrCreateDevice } from './devices';
+import { randomInt } from 'node:crypto';
 import { createSession, type SessionRecord } from './sessions';
 import { rateLimit } from './ratelimit';
 import { normalizeUserCode, randomToken, sha256, userCode } from './tokens';
@@ -150,7 +151,16 @@ export interface PairingForApprover {
   sameNetwork: boolean | null;
   /** Three codes, one correct, in random order. The user picks the one on the other screen. */
   codeChoices: string[] | null;
+  /**
+   * True when the requester is not on the approver's network (or it can't be
+   * told). Remote relays look like this, so the user must type the code, and
+   * the server limits what can be granted (see approvePairing).
+   */
+  requireTypedCode: boolean;
 }
+
+/** What a request from a different (or unknown) network may be granted. */
+export const REMOTE_LIMITS = { forbiddenScopes: ['devices:manage'] as string[], maxOwnedTtl: 7 * 24 * 60 * 60 };
 
 async function lookupPairingForApproverInScope(
   session: SessionRecord,
@@ -168,7 +178,6 @@ async function lookupPairingForApproverInScope(
       [ref.id],
     );
   } else {
-    await rateLimit(`pair-lookup:${session.user_id}`, 10, 10 * 60);
     const code = normalizeUserCode(ref.code);
     if (!code) return null;
     row = await one<PairingRow>(
@@ -181,8 +190,11 @@ async function lookupPairingForApproverInScope(
   }
   if (!row) return null;
   const status = effectiveStatus(row);
+  const network = sameNetwork(row.ip, ctx.ip);
   // Typing the code already proves the user can see it; scanning a QR does not.
-  const choices = 'id' in ref && status === 'pending' ? shuffledChoices(row.user_code) : null;
+  // On a different network, picking (a 1-in-3 guess) isn't offered at all.
+  const requireTypedCode = network !== true;
+  const choices = 'id' in ref && status === 'pending' && !requireTypedCode ? shuffledChoices(row.user_code) : null;
   return {
     id: row.id,
     requestedName: row.requested_name,
@@ -190,8 +202,9 @@ async function lookupPairingForApproverInScope(
     createdAt: row.created_at,
     expiresAt: row.expires_at,
     status,
-    sameNetwork: sameNetwork(row.ip, ctx.ip),
+    sameNetwork: network,
     codeChoices: choices,
+    requireTypedCode,
   };
 }
 
@@ -200,7 +213,7 @@ function shuffledChoices(real: string): string[] {
   while (set.size < 3) set.add(userCode());
   const arr = [...set];
   for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
+    const j = randomInt(i + 1);
     [arr[i], arr[j]] = [arr[j], arr[i]];
   }
   return arr;
@@ -250,12 +263,23 @@ async function approvePairingInScope(session: SessionRecord, input: ApprovalInpu
     if (!confirmation) throw new UserFacingError('reauth_required', 'Confirm this approval with your passkey.', 403);
 
     const row = await one<PairingRow>(
-      `select id, user_code, status, expires_at from device_pairing_requests where id = $1 for update`,
+      `select id, user_code, status, expires_at, host(ip) as ip from device_pairing_requests where id = $1 for update`,
       [input.requestId],
       c,
     );
     if (!row || effectiveStatus(row) !== 'pending') {
       throw new UserFacingError('not_pending', 'This request has expired or was already handled.', 409);
+    }
+    // Defence in depth against remote relays: a requester on another (or an
+    // unknown) network can't be given device management or long-lived access.
+    if (sameNetwork(row.ip, ctx.ip) !== true) {
+      if (scopes.some((sc) => REMOTE_LIMITS.forbiddenScopes.includes(sc)) || (input.kind === 'owned' && input.ttlSeconds > REMOTE_LIMITS.maxOwnedTtl)) {
+        throw new UserFacingError(
+          'remote_limit',
+          'This device isn’t on your network, so it can’t be allowed to manage devices or stay connected for more than 7 days.',
+          403,
+        );
+      }
     }
     if (code !== row.user_code) {
       // A wrong pick suggests the user can't see the requesting screen: fail closed.
@@ -309,9 +333,15 @@ async function rejectPairingInScope(session: SessionRecord, requestId: string, c
 
 // ---------------------------------------------------------------- tenant-scoped entry points
 
-export const lookupPairingForApprover = (...args: Parameters<typeof lookupPairingForApproverInScope>) =>
-  asUser(args[0].user_id, () => lookupPairingForApproverInScope(...args));
-export const approvePairing = (...args: Parameters<typeof approvePairingInScope>) =>
-  asUser(args[0].user_id, () => approvePairingInScope(...args));
+// Rate limits are applied before the tenant transaction opens: their counters
+// commit independently and must not hold a second pooled connection.
+export const lookupPairingForApprover = async (...args: Parameters<typeof lookupPairingForApproverInScope>) => {
+  if ('code' in args[1]) await rateLimit(`pair-lookup:${args[0].user_id}`, 10, 10 * 60);
+  return asUser(args[0].user_id, () => lookupPairingForApproverInScope(...args));
+};
+export const approvePairing = async (...args: Parameters<typeof approvePairingInScope>) => {
+  await rateLimit(`pair-approve:${args[0].user_id}`, 10, 10 * 60);
+  return asUser(args[0].user_id, () => approvePairingInScope(...args));
+};
 export const rejectPairing = (...args: Parameters<typeof rejectPairingInScope>) =>
   asUser(args[0].user_id, () => rejectPairingInScope(...args));
