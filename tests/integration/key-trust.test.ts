@@ -130,6 +130,28 @@ describe('trust in a new vault key', () => {
     expect(await verifyResume(s.vk, injected, s.vaultId, 1, await v.transitionProof(s.vk, injected, s.vaultId, 1))).toBe(true);
   });
 
+  it('demonstrates the removed-browser/server collusion limit of the outgoing-key proof', async () => {
+    const s = await twoBrowsers();
+    const attackerKey = v.generateVaultKey();
+    // Assume B has been removed but retained the old vault key. A malicious
+    // server can write a pending envelope for A and a proof B can compute.
+    await vault.revokeVaultDevice(await s.a.session(), s.bVaultDeviceId, ctx());
+    const [vt] = await query<{ id: string }>(`select id from vaults where user_id = $1`, [s.user.userId]);
+    const aId = (await vault.getVaultState(await s.a.session())).device!.id;
+    const forgedProof = await v.transitionProof(s.vk, attackerKey, s.vaultId, 1);
+    await query(`update vault_devices set next_envelope = $2 where id = $1`, [aId, await v.wrapVaultKeyForDevice(attackerKey, s.a.jwk, 2)]);
+    await query(
+      `insert into vault_rotations (user_id, vault_id, from_version, to_version, status, reason, next_recovery_envelope, next_recovery_verifier, transition_proof)
+       values ($1, $2, 1, 2, 'in_progress', 'device_removed', $3, decode(repeat('00', 32), 'hex'), $4)`,
+      [s.user.userId, vt.id, 'A'.repeat(54) + '==', forgedProof],
+    );
+    const status = await rot.rotationStatus(await s.a.session());
+    const injected = await v.unwrapVaultKeyForDevice(status.rotation!.nextEnvelope!, s.a.keys.privateKey);
+    // This is intentionally TRUE: the proof alone cannot establish which
+    // holder of the outgoing key authorised the transition.
+    expect(await verifyResume(s.vk, injected, s.vaultId, 1, status.rotation!.transition_proof)).toBe(true);
+  });
+
   it('requires a transition proof to start a rotation', async () => {
     const s = await twoBrowsers();
     const prepared = await prepareRotation();

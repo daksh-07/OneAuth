@@ -91,7 +91,9 @@ export function errorResponse(err: unknown) {
   if (err instanceof BackendNotConfiguredError) {
     return NextResponse.json({ error: 'backend_unavailable', message: 'OneAuth’s backend isn’t configured on this deployment.' }, { status: 503 });
   }
-  console.error(JSON.stringify({ level: 'error', msg: 'unhandled route error', name: (err as Error)?.name, message: (err as Error)?.message }));
+  // Driver and upstream exception messages can contain connection details,
+  // request fragments, or SQL parameters. Keep the diagnostic category only.
+  console.error(JSON.stringify({ level: 'error', msg: 'unhandled route error', name: (err as Error)?.name ?? 'UnknownError' }));
   return NextResponse.json({ error: 'internal', message: 'Something went wrong. Please try again.' }, { status: 500 });
 }
 
