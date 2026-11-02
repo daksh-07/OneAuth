@@ -101,6 +101,15 @@ export async function one<T extends pg.QueryResultRow>(
   return rows[0] ?? null;
 }
 
+/**
+ * Runs outside any tenant transaction, committing immediately. For records that
+ * must persist even if the surrounding operation fails and rolls back, such
+ * as rate-limit counters (otherwise failed attempts would never count).
+ */
+export async function queryAutonomous<T extends pg.QueryResultRow>(text: string, params: unknown[] = []): Promise<T[]> {
+  return (await pool().query<T>(text, params)).rows;
+}
+
 /** A transaction. Inside `asUser` it joins the tenant transaction. */
 export async function tx<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
   const scope = tenant.getStore();

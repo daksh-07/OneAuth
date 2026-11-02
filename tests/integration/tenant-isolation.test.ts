@@ -121,6 +121,12 @@ describe('tenant context on pooled connections', () => {
     }
   });
 
+  it('refuses to rate-limit inside a tenant scope (would hold two pooled connections)', async () => {
+    const { rateLimit } = await import('@/lib/server/ratelimit');
+    const alice = await createUser('Alice');
+    await expect(runtime.asUser(alice.userId, () => rateLimit('k', 1, 60))).rejects.toThrow('before opening a tenant scope');
+  });
+
   it('refuses to nest a different tenant inside an open scope', async () => {
     const alice = await createUser('Alice');
     const bob = await createUser('Bob');
