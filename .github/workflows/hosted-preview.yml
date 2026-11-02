@@ -1,0 +1,29 @@
+name: Hosted preview verification
+
+# Manual only: exercises a deployed preview with real WebAuthn ceremonies.
+# Requires repository secrets ONEAUTH_HOSTED_URL (canonical preview origin) and
+# VERCEL_AUTOMATION_BYPASS_SECRET (Vercel → Settings → Deployment Protection).
+on:
+  workflow_dispatch:
+
+jobs:
+  hosted:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test -c playwright.hosted.config.ts
+        env:
+          ONEAUTH_HOSTED_URL: ${{ secrets.ONEAUTH_HOSTED_URL }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: hosted-results
+          path: test-results/
+          retention-days: 7
