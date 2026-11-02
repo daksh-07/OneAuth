@@ -44,7 +44,7 @@ Design: [`docs/cloud/security-design.md`](../cloud/security-design.md). All bodi
 | `DELETE /api/cloud/vault/devices/:id` | `cloud:write` + step-up | Remove a browser's vault access, or decline a request. |
 | `GET /api/cloud/vault/recovery` | `cloud:read` | → `{vault_id, recovery_envelope}` (AES-KW ciphertext of the vault key). |
 | `POST /api/cloud/vault/recovery` | `cloud:write` + step-up, pending device | `{envelope, recoveryProof}`. `403 recovery_mismatch`. |
-| `GET /api/cloud/items?view=folder\|recent\|favorites\|trash&folder=` | `cloud:read`, active device | → `{folders, files, path}` (encrypted names and metadata). |
+| `GET /api/cloud/items?view=folder\|recent\|favorites\|trash\|all&folder=` | `cloud:read`, active device | → `{folders, files, path}` (encrypted names and metadata). |
 | `POST /api/cloud/files` | `cloud:write`, active device | `{fileId, folderId, size, sha256, encryptedMeta, wrappedKey}` → `{fileId, partSize, partCount}`. Reserves quota. `413 too_large` / `quota_exceeded`. |
 | `PUT /api/cloud/files/:id/parts/:idx` | `cloud:write` | Raw bytes. Each part is exactly `partSize`, except the last. → `{stored}`. |
 | `POST /api/cloud/files/:id/complete` | `cloud:write` | Server checks byte count and SHA-256, then settles quota. `409 integrity_mismatch`. |
@@ -55,6 +55,21 @@ Design: [`docs/cloud/security-design.md`](../cloud/security-design.md). All bodi
 | `PATCH /api/cloud/folders/:id` | `cloud:write` | `{encryptedName?, parentId?, trashed?}`. `409 invalid_move` on cycles. |
 | `DELETE /api/cloud/folders/:id` | `cloud:write` | Empty folders only (`409 not_empty`). |
 
+### Key-version rule
+
+Every request that carries material protected by the vault key must state `keyVersion`: the version of the vault key the client used. This covers starting an upload, creating or renaming a folder, approving a browser, and creating or editing a Space item. The server answers `409 stale_key` if that isn't the current version, and `409 rotation_in_progress` while a key replacement is running.
+
+### Vault-key rotation (preview; design: `docs/cloud/key-rotation.md`)
+
+| Method & path | Scope / extra | Purpose |
+| --- | --- | --- |
+| `GET /api/cloud/vault/rotation` | `cloud:read`, active browser | The in-progress rotation, this browser's `nextEnvelope` and remaining counts |
+| `POST /api/cloud/vault/rotation` | `cloud:write` + step-up, active browser | `{reason, keyVersion, envelopes:[{vaultDeviceId, envelope}], recoveryEnvelope, recoveryProof}`. Returns `409 devices_changed` / `rotation_in_progress` / `stale_key` |
+| `GET /api/cloud/vault/rotation/work` | active browser | Up to 200 each of files, folders and Space items still to re-wrap |
+| `POST /api/cloud/vault/rotation/batch` | active browser | `{rotationId, files?, folders?, items?}`. Idempotent |
+| `POST /api/cloud/vault/rotation/commit` | active browser | Atomic swap. Returns `409 rotation_incomplete` with `detail` counts if anything is missing |
+| `DELETE /api/cloud/vault/rotation` | active browser | `{rotationId}`. Abort: staged material is discarded |
+
 ## Space
 
 | Method & path | Scope | Purpose |
@@ -62,11 +77,15 @@ Design: [`docs/cloud/security-design.md`](../cloud/security-design.md). All bodi
 | `GET /api/space` | `space:read` | → `{spaces, selectedId, devices}`. Only spaces visible to **this device**. Creates "Personal" on first use. |
 | `POST /api/space` | `space:write` | `{name, kind}` → `{id}`. Maximum 12 spaces. |
 | `POST /api/space/select` | `space:read` | `{spaceId}`. Remembered per device. |
-| `PATCH /api/space/:id` | `space:write` | `{name?, kind?, accent?, allDevices?, deviceIds?}`. |
+| `PATCH /api/space/:id` | `space:write` | `{name?, kind?, accent?, allDevices?, deviceIds?, prefs?: {cloudSort?, linksInNewTab?}}`. |
 | `DELETE /api/space/:id` | `space:write` | Not the last one (`409 last_space`). Removes pins, not files. |
-| `GET /api/space/:id/pins` | `space:read` | → `{files, folders}` with the encrypted fields needed to show and open them. |
+| `GET /api/space/:id/pins` | `space:read` | → `{files, folders, locked, lockedCount}`. Encrypted fields only for active vault browsers. |
 | `POST /api/space/:id/pins` | `space:write` | `{fileId}` or `{folderId}`. Maximum 50 per space. |
 | `DELETE /api/space/:id/pins/:pinId` | `space:write` | Unpin. |
+| `GET /api/space/:id/items` | `space:read` | Encrypted bookmarks and shortcuts. Browsers without vault access get `{items: [], locked: true, lockedCount}`. |
+| `POST /api/space/:id/items` | `space:write`, active vault browser | `{id, kind: 'bookmark' \| 'shortcut', encryptedBody, keyVersion}`. Maximum 200 per space. |
+| `PATCH /api/space/:id/items/:itemId` | `space:write`, active vault browser | `{version, encryptedBody?, position?, keyVersion?}`. Returns `409 conflict` if another browser saved first. |
+| `DELETE /api/space/:id/items/:itemId` | `space:write`, active vault browser | Remove an item. |
 
 ## Versioning
 

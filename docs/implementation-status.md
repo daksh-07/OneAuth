@@ -1,6 +1,6 @@
 # OneAuth: implementation status
 
-_Last updated: 2 November 2026._
+_Last updated: 2 November 2026 (Phase 2B)._
 
 **Status labels:**
 
@@ -43,7 +43,10 @@ _Last updated: 2 November 2026._
 | Upload state (uploading/ready, integrity check, cancel releases quota) | Implemented and verified | Integration tests for hash mismatch, wrong part size and over-declaration. |
 | Cloud UI (setup, recovery key, approval with fingerprint, file browser, trash, favourites, storage meter, vault access) | Implemented and verified locally | E2E on desktop Chromium; visual, overflow and touch-target checks at mobile and desktop sizes. |
 | **End-to-end encrypted transfer between two authorised browsers** | Implemented and verified locally **and on the hosted Vercel + Neon preview** (behind the preview flag) | E2E: browser A encrypts a 1.6 MB file; B is approved after the codes are compared; B downloads it and the bytes match; the database holds no plaintext; removing access is enforced. Runs only under `ONEAUTH_CLOUD_PREVIEW=1`, never on Vercel production. |
-| Vault-key rotation after revocation | **Designed only** | A revoked browser keeps anything it already downloaded. |
+| Phase 2B self-review fixes F1–F10 | Implemented and verified | `security-design.md` §12; a regression test for each finding. This is a self-review, **not** an independent audit. |
+| Vault-key rotation (staged: start → re-wrap → commit or abort; resumable by any approved browser) | Implemented and verified, **preview only; design not independently reviewed** | `docs/cloud/key-rotation.md`; `key-rotation.test.ts` (6 scenarios); E2E through the UI. It protects material added afterwards, not what a removed browser already downloaded. |
+| Deep rotation (re-encrypting existing contents) | **Designed only** | Needs the S3/R2 driver to be practical. |
+| Search, sort, drag-and-drop, retryable transfers, Move to…, "Remove this browser" | Implemented and verified (E2E) | |
 | Padmé size padding, client-side malware scanning | **Not started** | |
 
 ## OneAuth Space
@@ -54,7 +57,11 @@ _Last updated: 2 November 2026._
 | Switcher, create, settings (name, type, colour) | Implemented and verified (E2E) |
 | Device-specific visibility, enforced server-side | Implemented and verified (integration tests across two devices) |
 | Pinned Cloud files and folders (names decrypted in the browser) | Implemented and verified (E2E) |
-| Bookmarks, service shortcuts, synced preferences | **Not started** (shown in the UI as "Planned") |
+| Bookmarks and shortcuts, end-to-end encrypted, only http(s) links rendered | Implemented and verified (integration plus E2E) |
+| Per-space preferences (Cloud sort, links in a new tab) | Implemented and verified |
+| Sync between approved browsers (20-second refresh, refresh on focus, conflict-safe edits) | Implemented and verified (conflict test; flagship E2E) |
+| Permission-aware content (locked counts for unapproved browsers; device-restricted spaces) | Implemented and verified |
+| Service sign-in, account-wide preferences, bookmark import | **Not started** (shown as "Planned") |
 
 ## Mobile and integrations
 
@@ -67,18 +74,19 @@ _Last updated: 2 November 2026._
 ## Validation on this branch (local)
 
 - `tsc --noEmit`: clean. `eslint .`: clean.
-- Vitest: 172 tests (unit and PostgreSQL integration, running as the least-privilege role).
+- Vitest: 196 tests (unit and PostgreSQL integration, running as the least-privilege role).
 - Playwright: 46 tests across desktop Chromium, iPhone WebKit, Android Chromium, Firefox and desktop WebKit, including axe accessibility, light and dark themes, no horizontal overflow, and touch targets.
 - `next build`: succeeds.
 - Hosted preview (`oneauth-git-claude-oneauth-cloud-foundation-…vercel.app`, commit `b064d44`): health `ok` / schema `current` / `least_privilege`. Hosted Playwright **8/8**, including `tests/hosted/cloud.spec.ts`: a two-browser encrypted transfer with byte-identical download, against real Vercel functions and the Neon preview database. Throwaway accounts were deleted.
 - PR #1's preview stays healthy on the shared preview database after migrations `0004` and `0005`.
+- Phase 2B: the flagship two-browser journey (`tests/e2e/cloud.spec.ts`) passes locally. Hosted results for the Phase 2B head are in the PR.
 
 ## Security concerns still open
 
 1. No independent cryptographic review (blocks real data).
 2. Browser-delivered E2EE trusts the served JavaScript; there's no code transparency yet.
-3. A 40-bit fingerprint is adequate only because a person compares it; this is a review item.
-4. Revoked devices aren't cryptographically cut off until vault-key rotation exists.
+3. The 60-bit security code relies on a person actually comparing it; this is a review item.
+4. Rotation doesn't re-encrypt existing contents: a removed browser that kept the old vault key can derive existing file keys if it ever gets the ciphertext (deep rotation is designed only).
 5. Preview and production share one Vercel project. Preview deployments share one preview database, and migrations `0004` and `0005` are additive, so PR #1's preview keeps working.
 
 ## Next actions
@@ -87,4 +95,4 @@ _Last updated: 2 November 2026._
 2. Independent review of `docs/cloud/security-design.md` (§11 checklist) before any real data.
 3. Physical-device runs from `docs/device-testing.md`.
 4. Decide on R2 (paid) before files larger than the preview limit.
-5. Vault-key rotation; then the token endpoint and native prototypes.
+5. Review sign-off on `key-rotation.md` §8, then deep rotation and the token endpoint.

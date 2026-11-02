@@ -39,7 +39,7 @@ Device key DK (ECDH P-256, generated in the browser, private key non-extractable
 ## 3. Device enrolment and approval
 
 1. On a new owned browser (signed in with a passkey), the user opens Cloud. The browser generates DK, stores the non-extractable private key in IndexedDB, and registers the public JWK. The server records `vault_devices(status = 'pending', fingerprint)`.
-2. The fingerprint is the first 8 Base32 characters of `SHA-256(canonical public JWK)`, displayed as `XXXX-XXXX`. The new device shows it.
+2. The fingerprint is the first 12 Base32 characters (60 bits) of `SHA-256(canonical public JWK)`, displayed as `XXXX-XXXX-XXXX`. The new device shows it. (v1 used 40 bits; Phase 2B raised it because grinding about 2⁴⁰ key pairs to match a code is within reach of rented compute. Existing 40-bit records stay valid.)
 3. On an already-approved device, Cloud lists pending devices. The approver's browser **recomputes the fingerprint from the public key the server returned** and shows it. The user approves only if it matches the one on the new device's screen. This detects a server (or attacker) substituting its own public key.
 4. Approval requires a passkey step-up (existing `reauth_at` window). The approving browser wraps VK to the new device's public key and uploads the envelope. The server checks that the approver is an `active` vault device of the **same user**, and stores it.
 5. Alternatively, the new device enters the **recovery key**. It unwraps VK locally, wraps it to its own DK, and becomes `active`. To stop a pending device from activating itself without the key, it also sends the recovery proof RP; the server compares SHA-256(RP) with the verifier stored at vault creation (constant-time). RP is domain-separated from KRK, so the verifier reveals nothing usable to unwrap VK. This is logged as `cloud.recovery_used`.
@@ -83,7 +83,7 @@ Sorting by name happens on the client after decryption. Ciphertext size padding 
 
 ## 8. Revocation and deletion semantics
 
-- **Revoking a vault device** deletes its envelope and marks it `revoked`; disconnecting the device in Devices also revokes it. The server then refuses that device. **Already-downloaded files and any VK copy held in that browser's memory can't be recalled.** A full defence needs **vault-key rotation** (new VK; re-wrap every FK and re-issue envelopes), which is designed here but **not implemented in v1**.
+- **Revoking a vault device** deletes its envelope and marks it `revoked`; disconnecting the device in Devices also revokes it. The server then refuses that device. **Already-downloaded files and any VK copy held in that browser's memory can't be recalled.** **Vault-key rotation** (new VK; re-wrap every FK, folder name and Space item; re-issue envelopes and the recovery key) is specified in [`key-rotation.md`](key-rotation.md) and implemented as a staged protocol behind the preview flag. Rotation protects material added afterwards. It does not re-encrypt existing file contents (that's deep rotation, designed only).
 - **Trash** is reversible. **Delete permanently** removes the ciphertext rows and wrapped key immediately and releases quota. Provider backups (Neon point-in-time history) may retain ciphertext until they expire. Without VK the ciphertext is unreadable, but "secure deletion" is limited to that guarantee.
 
 ## 9. Threat model
@@ -113,11 +113,34 @@ Sorting by name happens on the client after decryption. Ciphertext size padding 
 ## 11. Review checklist (must be signed off before real data)
 
 1. Chunk framing (§4): AAD contents; header handling; nonce strategy.
-2. Fingerprint length (40 bits) against an online key-substitution attacker.
+2. Fingerprint length (60 bits since Phase 2B) against an online key-substitution attacker.
 3. IndexedDB key storage lifetime and clearing on sign-out or revocation.
-4. VK rotation design and its absence in v1.
+4. The VK rotation design (`key-rotation.md` §8 lists its questions), and deep rotation.
 5. Recovery-key UX: confirmation quiz; storage advice.
 6. Padmé padding and metadata exposure.
 7. Code-delivery trust: SRI, a build manifest, native apps for key-holding devices.
 8. `s3` driver: presigned URL scoping and multipart integrity before enabling.
 9. Abuse: free-tier storage farming; rate limits on upload sessions.
+
+## 12. Phase 2B self-review (not an independent audit)
+
+The implementation was reviewed against this design by the same team that wrote it. Each finding has a regression test in `tests/integration/cloud-adversarial.test.ts` or `tests/unit/vault-names.test.ts`.
+
+| # | Finding | Fix |
+| --- | --- | --- |
+| F1 | Abandoned uploads held their quota reservation forever | Released after 24h under the usage lock; at most 20 unfinished uploads |
+| F2 | Folder-move cycle check was check-then-act; concurrent moves could create a cycle. The same race let a file moved or uploaded into a folder being deleted cascade away without releasing quota | Per-account advisory lock on tree changes |
+| F3 | Space pins returned wrapped keys and encrypted metadata to browsers without vault access, even with Cloud disabled | Locked count only |
+| F4 | A pending browser could remove approved browsers | Needs vault access, except to withdraw itself |
+| F5 | A leftover request from a disconnected device could be approved | The device must still be connected and owned |
+| F6 | Download Blob type came from decrypted metadata; a browser that opens blob URLs could run HTML/SVG on the OneAuth origin | Always `application/octet-stream` |
+| F7 | Decrypted names weren't sanitised (bidi overrides, controls) | `lib/vault/names.ts` |
+| F8 | 40-bit security codes | 60 bits |
+| F9 | No rate limits or row caps on Cloud writes | Added |
+| F10 | No way to delete a browser's stored device key | "Remove this browser" |
+
+**Reviewed and found consistent with the design:** a random 96-bit nonce per chunk and per sealed record under single-purpose keys; full-header and file-ID AAD; label plus 16-byte ID AAD in `sealJson` (unambiguous); non-extractable device keys; file keys extractable only inside `rewrapFileKey`; RLS on every table, including the new ones (`db-verify` in every build).
+
+**Client trust assumptions (unchanged):** the browser runs whatever JavaScript the server sends. A malicious or compromised deployment can exfiltrate keys. This is the main reason Cloud stays preview-only.
+
+**Sign-out:** signing out ends the session but deliberately keeps this browser's device key, so the same owned browser doesn't need re-approval. "Remove this browser" withdraws vault access and deletes the key. Whether sign-out on an owned device should offer this by default is a review item.
