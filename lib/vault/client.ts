@@ -2,7 +2,9 @@
 
 import { ApiError, postJson } from '@/lib/client/api';
 import * as v from './crypto';
-import { clearDeviceKeys, loadDeviceKeys, saveDeviceKeys } from './keystore';
+import { clearDeviceKeys, loadDeviceKeys, pinStore, saveDeviceKeys } from './keystore';
+import { checkUnlock, markConfirmed, trustOwnKey, verifyResume, type Trust } from './trust';
+export { VaultTrustError } from './trust';
 import { downloadType, safeName } from './names';
 
 /**
@@ -26,6 +28,7 @@ export interface VaultDevice {
 export interface VaultState {
   vault: { id: string; key_version: number; created_at: string } | null;
   rotation: { id: string; to_version: number; reason: string; started_at: string } | null;
+  transitions: { from_version: number; to_version: number; transition_proof: string | null }[];
   device: { id: string; status: 'pending' | 'active'; fingerprint: string; envelope: string | null } | null;
   devices: VaultDevice[];
   usage: { used: number; reserved: number; quota: number };
@@ -104,24 +107,44 @@ export async function prepareVault(): Promise<PreparedVault> {
   return { vaultId: crypto.randomUUID(), vaultKey: v.generateVaultKey(), recovery: await v.generateRecoveryKey() };
 }
 
-export async function createVault(p: PreparedVault, jwk: v.PublicDeviceJwk) {
-  return postJson('/api/cloud/vault', {
+export async function createVault(p: PreparedVault, jwk: v.PublicDeviceJwk, userId: string) {
+  const res = await postJson('/api/cloud/vault', {
     vaultId: p.vaultId,
     recoveryEnvelope: await v.wrapVaultKeyForRecovery(p.vaultKey, p.recovery.bytes, p.vaultId),
     recoveryProof: await v.recoveryProof(p.recovery.bytes, p.vaultId),
     publicJwk: jwk,
-    envelope: await v.wrapVaultKeyForDevice(p.vaultKey, jwk),
+    envelope: await v.wrapVaultKeyForDevice(p.vaultKey, jwk, 1),
   });
+  await trustOwnKey(pinStore(userId), p.vaultKey, p.vaultId, 1); // this browser made the key
+  return res;
 }
 
 export function registerDevice(jwk: v.PublicDeviceJwk) {
   return postJson<{ id: string; status: 'pending' | 'active'; fingerprint: string }>('/api/cloud/vault/devices', { publicJwk: jwk });
 }
 
-export function unlock(state: VaultState, privateKey: CryptoKey): Promise<Uint8Array> {
-  if (!state.device?.envelope) throw new Error('This device has no vault access');
-  return v.unwrapVaultKeyForDevice(state.device.envelope, privateKey);
+/**
+ * Opens this browser's envelope and checks it against what this browser has
+ * seen before (lib/vault/trust.ts): refuses rollback and substitution, and
+ * reports 'needs_confirmation' for a key it couldn't verify by itself.
+ */
+export async function unlock(state: VaultState, privateKey: CryptoKey, userId: string): Promise<{ vaultKey: Uint8Array; keyVersion: number; trust: Trust }> {
+  if (!state.device?.envelope || !state.vault) throw new Error('This device has no vault access');
+  return checkUnlock({
+    envelope: state.device.envelope,
+    privateKey,
+    vaultId: state.vault.id,
+    serverVersion: state.vault.key_version,
+    transitions: state.transitions ?? [],
+    store: pinStore(userId),
+  });
 }
+
+/** The code both browsers show after an approval or key change; the user compares them (G5). */
+export const confirmationCode = (vaultKey: Uint8Array, vaultId: string, keyVersion: number, jwk: v.PublicDeviceJwk) =>
+  v.vaultConfirmationCode(vaultKey, vaultId, keyVersion, jwk);
+
+export const confirmThisBrowser = (userId: string, keyVersion: number) => markConfirmed(pinStore(userId), keyVersion);
 
 /**
  * Approves another browser. The fingerprint is recomputed here from the key
@@ -130,7 +153,7 @@ export function unlock(state: VaultState, privateKey: CryptoKey): Promise<Uint8A
  */
 export async function approveDevice(device: VaultDevice, vaultKey: Uint8Array, keyVersion: number) {
   const fingerprint = await v.deviceFingerprint(device.public_jwk);
-  return postJson(`/api/cloud/vault/devices/${device.id}`, { envelope: await v.wrapVaultKeyForDevice(vaultKey, device.public_jwk), fingerprint, keyVersion });
+  return postJson(`/api/cloud/vault/devices/${device.id}`, { envelope: await v.wrapVaultKeyForDevice(vaultKey, device.public_jwk, keyVersion), fingerprint, keyVersion });
 }
 
 /**
@@ -147,14 +170,16 @@ export function revokeVaultDevice(id: string) {
 }
 
 /** Unlocks with the recovery key on this browser and gives this browser its own envelope. */
-export async function recoverWithKey(typed: string, jwk: v.PublicDeviceJwk): Promise<Uint8Array> {
+export async function recoverWithKey(typed: string, jwk: v.PublicDeviceJwk, userId: string, keyVersion: number): Promise<Uint8Array> {
   const rk = await v.parseRecoveryKey(typed);
   const env = await request<{ vault_id: string; recovery_envelope: string }>('GET', '/api/cloud/vault/recovery');
+  // AES-KW under a key derived from the recovery key authenticates the vault key: the server can't forge it.
   const vaultKey = await v.unwrapVaultKeyForRecovery(env.recovery_envelope, rk, env.vault_id);
   await postJson('/api/cloud/vault/recovery', {
-    envelope: await v.wrapVaultKeyForDevice(vaultKey, jwk),
+    envelope: await v.wrapVaultKeyForDevice(vaultKey, jwk, keyVersion),
     recoveryProof: await v.recoveryProof(rk, env.vault_id),
   });
+  await trustOwnKey(pinStore(userId), vaultKey, env.vault_id, keyVersion);
   return vaultKey;
 }
 
@@ -289,13 +314,14 @@ export function formatBytes(n: number): string {
  * Unlocks the vault on this browser if it's already an approved vault device.
  * Never registers or creates anything: returns null when Cloud isn't set up here.
  */
-export async function tryUnlock(userId: string): Promise<{ vaultKey: Uint8Array; vaultId: string; keyVersion: number } | null> {
+export async function tryUnlock(userId: string): Promise<{ vaultKey: Uint8Array; vaultId: string; keyVersion: number; trusted: boolean } | null> {
   try {
     const keys = await loadDeviceKeys(userId);
     if (!keys) return null;
     const s = await getState();
     if (!s.vault || s.device?.status !== 'active') return null;
-    return { vaultKey: await unlock(s, keys.privateKey), vaultId: s.vault.id, keyVersion: s.vault.key_version };
+    const u = await unlock(s, keys.privateKey, userId);
+    return { vaultKey: u.vaultKey, vaultId: s.vault.id, keyVersion: u.keyVersion, trusted: u.trust === 'trusted' };
   } catch {
     return null;
   }
@@ -329,13 +355,31 @@ export { prepareRotation, type PreparedRotation } from './rotate';
 
 type RotationProgress = (p: { done: number; total: number }) => void;
 
-/** Starts a rotation: the new key goes to every active browser, and the recovery key is replaced. */
-export async function startRotation(prepared: import('./rotate').PreparedRotation, state: VaultState, reason: 'device_removed' | 'manual') {
+/**
+ * Starts a rotation: the new key goes to every active browser with a transition
+ * proof made with the current key. The recovery key is replaced unless the user
+ * re-entered it (`keepRecoveryKey`, typed form), in which case it stays valid.
+ */
+export async function startRotation(
+  prepared: import('./rotate').PreparedRotation,
+  state: VaultState,
+  reason: 'device_removed' | 'manual',
+  currentKey: Uint8Array,
+  keepRecoveryKey?: string,
+) {
   const { startPayload } = await import('./rotate');
   const active = state.devices.filter((d) => d.status === 'active');
-  const body = await startPayload(prepared, state.vault!.id, active);
+  const body = await startPayload(prepared, state.vault!.id, active, {
+    oldKey: currentKey,
+    fromVersion: state.vault!.key_version,
+    keepRecoveryKey: keepRecoveryKey ? await v.parseRecoveryKey(keepRecoveryKey) : undefined,
+  });
   return postJson<{ rotationId: string; toVersion: number }>('/api/cloud/vault/rotation', { reason, keyVersion: state.vault!.key_version, ...body });
 }
+
+/** After this browser committed a rotation it made or verified: it trusts the new key without a code. */
+export const trustRotatedKey = (userId: string, newKey: Uint8Array, vaultId: string, keyVersion: number) =>
+  trustOwnKey(pinStore(userId), newKey, vaultId, keyVersion);
 
 /** Re-wraps everything still outstanding, then commits. Safe to call again after an interruption. */
 export async function finishRotation(oldKey: Uint8Array, newKey: Uint8Array, vaultId: string, rotationId: string, onProgress: RotationProgress = () => {}) {
@@ -353,11 +397,22 @@ export async function finishRotation(oldKey: Uint8Array, newKey: Uint8Array, vau
   await postJson('/api/cloud/vault/rotation/commit', { rotationId });
 }
 
-/** For resuming: this browser's copy of the new key, wrapped to its own device key at the start. */
-export async function rotationNextKey(privateKey: CryptoKey) {
-  const s = await request<{ rotation: { id: string; nextEnvelope: string | null } | null }>('GET', '/api/cloud/vault/rotation');
+/**
+ * For resuming: this browser's copy of the new key, wrapped to its own device
+ * key at the start, accepted only if its transition proof verifies with the
+ * current key. Without that check a server could plant a "rotation" and have
+ * this browser re-wrap every file key under a key the server chose.
+ */
+export async function rotationNextKey(privateKey: CryptoKey, currentKey: Uint8Array, vaultId: string) {
+  const s = await request<{ rotation: { id: string; from_version: number; to_version: number; transition_proof: string | null; nextEnvelope: string | null } | null }>(
+    'GET',
+    '/api/cloud/vault/rotation',
+  );
   if (!s.rotation?.nextEnvelope) return null;
-  return { rotationId: s.rotation.id, newKey: await v.unwrapVaultKeyForDevice(s.rotation.nextEnvelope, privateKey) };
+  const { vaultKey: newKey, keyVersion } = await v.openVaultEnvelope(s.rotation.nextEnvelope, privateKey);
+  const ok = keyVersion === s.rotation.to_version && (await verifyResume(currentKey, newKey, vaultId, s.rotation.from_version, s.rotation.transition_proof));
+  if (!ok) throw new v.VaultCryptoError('This key replacement can’t be verified, so this browser won’t continue it. Cancel it instead.');
+  return { rotationId: s.rotation.id, newKey, toVersion: s.rotation.to_version };
 }
 
 export const abortRotation = (rotationId: string) => request('DELETE', '/api/cloud/vault/rotation', { rotationId });

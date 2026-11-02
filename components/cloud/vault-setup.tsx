@@ -10,7 +10,7 @@ import type { PublicDeviceJwk } from '@/lib/vault/crypto';
 import { RecoveryKeyStep } from './recovery-key-step';
 
 /** Creates the vault on this browser. The recovery key is shown once and must be confirmed before anything is sent. */
-export function VaultSetup({ jwk, onCreated }: { jwk: PublicDeviceJwk; onCreated: () => void }) {
+export function VaultSetup({ jwk, userId, onCreated }: { jwk: PublicDeviceJwk; userId: string; onCreated: () => void }) {
   const [prepared, setPrepared] = useState<cloud.PreparedVault | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -26,7 +26,7 @@ export function VaultSetup({ jwk, onCreated }: { jwk: PublicDeviceJwk; onCreated
     setBusy(true);
     setError(null);
     try {
-      await withStepUp(() => cloud.createVault(prepared, jwk));
+      await withStepUp(() => cloud.createVault(prepared, jwk, userId));
       onCreated();
     } catch (err) {
       if (!isCancellation(err)) setError(passkeyErrorMessage(err));

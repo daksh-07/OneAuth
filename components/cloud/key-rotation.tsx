@@ -3,13 +3,19 @@
 import { useState } from 'react';
 import { KeyRound, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/field';
 import { DialogContent, DialogRoot } from '@/components/ui/dialog';
 import { Notice } from '@/components/ui/notice';
 import { ApiError, isCancellation, passkeyErrorMessage, withStepUp } from '@/lib/client/api';
 import * as cloud from '@/lib/vault/client';
+import { VaultCryptoError } from '@/lib/vault/crypto';
 import { RecoveryKeyStep } from './recovery-key-step';
 
-type Step = { kind: 'explain' } | { kind: 'recovery'; prepared: cloud.PreparedRotation } | { kind: 'running'; done: number; total: number };
+type Step =
+  | { kind: 'explain' }
+  | { kind: 'keep'; prepared: cloud.PreparedRotation }
+  | { kind: 'recovery'; prepared: cloud.PreparedRotation }
+  | { kind: 'running'; done: number; total: number };
 
 /** What replacing the vault key does and doesn't do (docs/cloud/key-rotation.md §1). */
 function WhatItDoes() {
@@ -37,6 +43,7 @@ export function RotateKeyDialog({
   state,
   vaultKey,
   reason,
+  userId,
   onClose,
   onDone,
 }: {
@@ -44,23 +51,35 @@ export function RotateKeyDialog({
   state: cloud.VaultState;
   vaultKey: Uint8Array;
   reason: 'device_removed' | 'manual';
+  userId: string;
   onClose: () => void;
   onDone: () => void;
 }) {
   const [step, setStep] = useState<Step>({ kind: 'explain' });
   const [error, setError] = useState<string | null>(null);
+  const [typedKey, setTypedKey] = useState('');
   const running = step.kind === 'running';
 
-  async function run(prepared: cloud.PreparedRotation) {
+  async function run(prepared: cloud.PreparedRotation, keepKey?: string) {
     setError(null);
     try {
-      const { rotationId } = await withStepUp(() => cloud.startRotation(prepared, state, reason));
+      const { rotationId, toVersion } = await withStepUp(() => cloud.startRotation(prepared, state, reason, vaultKey, keepKey));
       setStep({ kind: 'running', done: 0, total: 0 });
       await cloud.finishRotation(vaultKey, prepared.vaultKey, state.vault!.id, rotationId, (p) => setStep({ kind: 'running', ...p }));
+      await cloud.trustRotatedKey(userId, prepared.vaultKey, state.vault!.id, toVersion); // this browser made it
       onDone();
     } catch (err) {
       if (isCancellation(err)) return;
-      setStep({ kind: 'recovery', prepared });
+      setStep(keepKey ? { kind: 'keep', prepared } : { kind: 'recovery', prepared });
+      if (err instanceof ApiError && err.code === 'recovery_replacement_required') {
+        setStep({ kind: 'recovery', prepared });
+        setError(err.message);
+        return;
+      }
+      if (err instanceof ApiError && err.code === 'recovery_mismatch') {
+        setError('That isn’t your current recovery key. Check it, or get a new recovery key instead.');
+        return;
+      }
       if (err instanceof ApiError && err.code === 'devices_changed') setError('Browsers were added or removed meanwhile. Close this and try again.');
       else setError(`${passkeyErrorMessage(err)} Any browser with access can finish or cancel the replacement from the Cloud page.`);
       onDone(); // refresh: an interrupted rotation shows as resumable
@@ -77,9 +96,37 @@ export function RotateKeyDialog({
               <Button variant="ghost" onClick={onClose}>
                 Not now
               </Button>
-              <Button onClick={async () => setStep({ kind: 'recovery', prepared: await cloud.prepareRotation() })}>Continue</Button>
+              <Button variant="secondary" onClick={async () => setStep({ kind: 'keep', prepared: await cloud.prepareRotation() })}>
+                Keep my recovery key
+              </Button>
+              <Button onClick={async () => setStep({ kind: 'recovery', prepared: await cloud.prepareRotation() })}>Get a new recovery key</Button>
             </div>
           </>
+        ) : step.kind === 'keep' ? (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void run(step.prepared, typedKey);
+            }}
+          >
+            <p className="text-[13px] leading-relaxed text-muted">
+              Enter your current recovery key. It’s checked in this browser and used to seal the new vault key, so it keeps working. If a browser
+              you removed was ever unlocked with it, you’ll be asked for a new one instead.
+            </p>
+            <label htmlFor="keep-rk" className="mt-4 block text-sm font-medium">
+              Current recovery key
+            </label>
+            <Input id="keep-rk" className="mt-1.5 font-mono" autoComplete="off" spellCheck={false} value={typedKey} onChange={(e) => setTypedKey(e.target.value)} />
+            {error ? <p className="mt-2 text-[13px] text-danger">{error}</p> : null}
+            <div className="mt-5 flex justify-end gap-2">
+              <Button type="button" variant="ghost" onClick={onClose}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={typedKey.trim().length < 20}>
+                Replace vault key
+              </Button>
+            </div>
+          </form>
         ) : step.kind === 'recovery' ? (
           <>
             <p className="text-[13px] leading-relaxed text-muted">
@@ -118,11 +165,13 @@ export function RotateKeyDialog({
 /** Shown on every approved browser while a replacement is unfinished, so any of them can finish or cancel it. */
 export function RotationInProgress({
   state,
+  userId,
   vaultKey,
   privateKey,
   onDone,
 }: {
   state: cloud.VaultState;
+  userId: string;
   vaultKey: Uint8Array;
   privateKey: CryptoKey;
   onDone: () => void;
@@ -135,12 +184,16 @@ export function RotationInProgress({
     setBusy('resume');
     setError(null);
     try {
-      const next = await cloud.rotationNextKey(privateKey);
+      // Refuses unless the new key's transition proof verifies with the current key (planted rotations).
+      const next = await cloud.rotationNextKey(privateKey, vaultKey, state.vault!.id);
       if (!next) throw new Error('no key');
       await cloud.finishRotation(vaultKey, next.newKey, state.vault!.id, next.rotationId, setProgress);
+      await cloud.trustRotatedKey(userId, next.newKey, state.vault!.id, next.toVersion);
       onDone();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'This browser couldn’t finish the replacement. Try again, or cancel it.');
+      setError(
+        err instanceof ApiError || err instanceof VaultCryptoError ? err.message : 'This browser couldn’t finish the replacement. Try again, or cancel it.',
+      );
     } finally {
       setBusy(null);
     }

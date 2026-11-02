@@ -343,14 +343,56 @@ export async function deviceFingerprint(jwk: PublicDeviceJwk): Promise<string> {
   return `${b32.slice(0, 4)}-${b32.slice(4, 8)}-${b32.slice(8, 12)}`;
 }
 
-/** JWE (compact) ECDH-ES+A256KW / A256GCM of the vault key to a device's public key. */
-export async function wrapVaultKeyForDevice(vaultKey: Uint8Array, device: PublicDeviceJwk): Promise<string> {
+/**
+ * JWE (compact) ECDH-ES+A256KW / A256GCM of the vault key to a device's public key.
+ * The protected header carries `oak_kv`, the vault-key version, which the AEAD
+ * authenticates: the server can't relabel an old envelope as a newer version.
+ * (Envelopes from before Phase 2C have no `oak_kv` and are treated as version 1.)
+ */
+export async function wrapVaultKeyForDevice(vaultKey: Uint8Array, device: PublicDeviceJwk, keyVersion = 1): Promise<string> {
   assertKey(vaultKey);
   if (!isPublicDeviceJwk(device)) throw new VaultCryptoError('Invalid device key');
+  if (!Number.isInteger(keyVersion) || keyVersion < 1) throw new VaultCryptoError('Invalid key version');
   const key = await importJWK(device as JWK, 'ECDH-ES+A256KW');
   return new CompactEncrypt(vaultKey)
-    .setProtectedHeader({ alg: 'ECDH-ES+A256KW', enc: 'A256GCM', kid: await calculateJwkThumbprint(device as JWK, 'sha256') })
+    .setProtectedHeader({ alg: 'ECDH-ES+A256KW', enc: 'A256GCM', kid: await calculateJwkThumbprint(device as JWK, 'sha256'), oak_kv: keyVersion })
     .encrypt(key);
+}
+
+/** Like unwrapVaultKeyForDevice, also returning the authenticated key version from the envelope. */
+export async function openVaultEnvelope(envelope: string, privateKey: CryptoKey): Promise<{ vaultKey: Uint8Array; keyVersion: number }> {
+  try {
+    const { plaintext, protectedHeader } = await compactDecrypt(envelope, privateKey, {
+      keyManagementAlgorithms: ['ECDH-ES+A256KW'],
+      contentEncryptionAlgorithms: ['A256GCM'],
+    });
+    assertKey(plaintext);
+    const kv = protectedHeader.oak_kv === undefined ? 1 : protectedHeader.oak_kv;
+    if (typeof kv !== 'number' || !Number.isInteger(kv) || kv < 1) throw new Error('kv');
+    return { vaultKey: plaintext, keyVersion: kv };
+  } catch {
+    throw new VaultCryptoError('This device can’t unlock the vault');
+  }
+}
+
+/** A one-way commitment to a vault key (for local pinning); reveals nothing usable about the key. */
+export async function vaultKeyCommitment(vaultKey: Uint8Array, vaultId: string, keyVersion: number): Promise<string> {
+  assertKey(vaultKey);
+  return toBase64(await sha256(concat(enc.encode('oneauth/v1/vk-commit'), uuidBytes(vaultId), u32(keyVersion), vaultKey)));
+}
+
+/**
+ * Post-approval confirmation code (Phase 2C, G5). Both the approving browser
+ * (from the vault key it holds) and the new browser (from the vault key it
+ * actually received) compute it. If a server injected a different vault key
+ * into the new browser's envelope, the codes differ. 60 bits, XXXX-XXXX-XXXX.
+ */
+export async function vaultConfirmationCode(vaultKey: Uint8Array, vaultId: string, keyVersion: number, device: PublicDeviceJwk): Promise<string> {
+  assertKey(vaultKey);
+  const thumb = await calculateJwkThumbprint(device as JWK, 'sha256');
+  const digest = await sha256(concat(enc.encode('oneauth/v1/vk-confirm'), uuidBytes(vaultId), u32(keyVersion), await sha256(vaultKey), enc.encode(thumb)));
+  const b32 = base32(digest.subarray(0, 8));
+  return `${b32.slice(0, 4)}-${b32.slice(4, 8)}-${b32.slice(8, 12)}`;
 }
 
 export async function unwrapVaultKeyForDevice(envelope: string, privateKey: CryptoKey): Promise<Uint8Array> {
@@ -436,4 +478,40 @@ export async function recoveryProof(recoveryKey: Uint8Array, vaultId: string): P
     256,
   );
   return toBase64(new Uint8Array(bits));
+}
+
+// ---------------------------------------------------------------- rotation transition proofs (Phase 2C)
+
+/** HMAC key that authenticates "the vault key after version N is K" statements. Derived from vault key N. */
+export async function transitionKey(vaultKey: Uint8Array, vaultId: string, extractable = false): Promise<CryptoKey> {
+  assertKey(vaultKey);
+  const base = await subtle.importKey('raw', vaultKey as Uint8Array<ArrayBuffer>, 'HKDF', false, ['deriveKey']);
+  return subtle.deriveKey(
+    { name: 'HKDF', hash: 'SHA-256', salt: uuidBytes(vaultId) as Uint8Array<ArrayBuffer>, info: enc.encode('oneauth/v1/transition') },
+    base,
+    { name: 'HMAC', hash: 'SHA-256', length: 256 },
+    extractable,
+    ['sign', 'verify'],
+  );
+}
+
+function transitionMessage(vaultId: string, from: number, to: number, nextCommitment: string) {
+  return concat(enc.encode('oneauth/v1/transition-proof'), uuidBytes(vaultId), u32(from), u32(to), fromBase64(nextCommitment));
+}
+
+/** Made by the rotating browser: proves the new key came from someone holding the outgoing one. */
+export async function transitionProof(oldKey: Uint8Array, newKey: Uint8Array, vaultId: string, from: number): Promise<string> {
+  const k = await transitionKey(oldKey, vaultId);
+  const commit = await vaultKeyCommitment(newKey, vaultId, from + 1);
+  return toBase64(new Uint8Array(await subtle.sign('HMAC', k, transitionMessage(vaultId, from, from + 1, commit))));
+}
+
+/** Checked by every other browser (with the outgoing key, or a stored transitionKey) before trusting the new key. */
+export async function verifyTransition(key: CryptoKey, newKey: Uint8Array, vaultId: string, from: number, proof: string): Promise<boolean> {
+  try {
+    const commit = await vaultKeyCommitment(newKey, vaultId, from + 1);
+    return await subtle.verify('HMAC', key, fromBase64(proof), transitionMessage(vaultId, from, from + 1, commit));
+  } catch {
+    return false;
+  }
 }

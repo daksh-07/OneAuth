@@ -186,3 +186,49 @@ describe('key rotation primitives', () => {
     expect(await v.openJson(space, 'space-item', id, sealed)).toEqual({ url: 'https://example.com' });
   });
 });
+
+describe('Phase 2C: envelope versions, commitments, confirmation codes, transition proofs', () => {
+  it('binds the key version into the envelope so it can’t be relabelled', async () => {
+    const vk = v.generateVaultKey();
+    const kp = await v.generateDeviceKeyPair();
+    const jwk = await v.exportPublicJwk(kp.publicKey);
+    const env = await v.wrapVaultKeyForDevice(vk, jwk, 3);
+    expect(await v.openVaultEnvelope(env, kp.privateKey)).toEqual({ vaultKey: vk, keyVersion: 3 });
+    // Rewriting the header's version breaks authentication.
+    const [h, ...rest] = env.split('.');
+    const header = JSON.parse(Buffer.from(h, 'base64url').toString());
+    const forged = [Buffer.from(JSON.stringify({ ...header, oak_kv: 4 })).toString('base64url'), ...rest].join('.');
+    await expect(v.openVaultEnvelope(forged, kp.privateKey)).rejects.toThrow(v.VaultCryptoError);
+    // Legacy envelopes (no version) read as version 1.
+    const legacy = await v.wrapVaultKeyForDevice(vk, jwk);
+    expect((await v.openVaultEnvelope(legacy, kp.privateKey)).keyVersion).toBe(1);
+  });
+
+  it('derives confirmation codes that differ if the vault key, version or device differs', async () => {
+    const vk = v.generateVaultKey();
+    const jwkA = await v.exportPublicJwk((await v.generateDeviceKeyPair()).publicKey);
+    const jwkB = await v.exportPublicJwk((await v.generateDeviceKeyPair()).publicKey);
+    const code = await v.vaultConfirmationCode(vk, VAULT_ID, 1, jwkA);
+    expect(code).toMatch(/^[A-Z2-7]{4}-[A-Z2-7]{4}-[A-Z2-7]{4}$/);
+    expect(await v.vaultConfirmationCode(vk, VAULT_ID, 1, jwkA)).toBe(code);
+    expect(await v.vaultConfirmationCode(v.generateVaultKey(), VAULT_ID, 1, jwkA)).not.toBe(code);
+    expect(await v.vaultConfirmationCode(vk, VAULT_ID, 2, jwkA)).not.toBe(code);
+    expect(await v.vaultConfirmationCode(vk, VAULT_ID, 1, jwkB)).not.toBe(code);
+  });
+
+  it('accepts a transition only from a holder of the outgoing key', async () => {
+    const vk1 = v.generateVaultKey();
+    const vk2 = v.generateVaultKey();
+    const proof = await v.transitionProof(vk1, vk2, VAULT_ID, 1);
+    const stored = await v.transitionKey(vk1, VAULT_ID); // non-extractable, as a browser keeps it
+    await expect(crypto.subtle.exportKey('raw', stored)).rejects.toThrow();
+    expect(await v.verifyTransition(stored, vk2, VAULT_ID, 1, proof)).toBe(true);
+    // A server substituting its own "new" key can't produce a valid proof.
+    const injected = v.generateVaultKey();
+    expect(await v.verifyTransition(stored, injected, VAULT_ID, 1, proof)).toBe(false);
+    expect(await v.verifyTransition(stored, injected, VAULT_ID, 1, await v.transitionProof(v.generateVaultKey(), injected, VAULT_ID, 1))).toBe(false);
+    // Bound to the version step and the vault.
+    expect(await v.verifyTransition(stored, vk2, VAULT_ID, 2, proof)).toBe(false);
+    expect(await v.verifyTransition(await v.transitionKey(vk1, OTHER_ID), vk2, OTHER_ID, 1, proof)).toBe(false);
+  });
+});

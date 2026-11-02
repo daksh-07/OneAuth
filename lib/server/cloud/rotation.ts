@@ -1,5 +1,5 @@
 import 'server-only';
-import { createHash } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { asUser, one, query } from '../db';
 import { UserFacingError } from '../errors';
 import { recordEvent, type RequestContext } from '../events';
@@ -44,8 +44,8 @@ export async function rotationStatus(session: SessionRecord) {
   assertCloudSession(session, 'read');
   return asUser(session.user_id, async () => {
     const dev = await requireActiveVaultDevice(session);
-    const r = await one<Rotation & { started_at: Date }>(
-      `select id, vault_id, from_version, to_version, reason, started_at from vault_rotations where status = 'in_progress'`,
+    const r = await one<Rotation & { started_at: Date; transition_proof: string | null }>(
+      `select id, vault_id, from_version, to_version, reason, started_at, transition_proof from vault_rotations where status = 'in_progress'`,
     );
     if (!r) return { rotation: null };
     const mine = await one<{ next_envelope: string | null }>(`select next_envelope from vault_devices where id = $1`, [dev.id]);
@@ -70,7 +70,17 @@ async function remaining() {
  */
 export async function startRotation(
   session: SessionRecord,
-  input: { reason: unknown; envelopes: unknown; recoveryEnvelope: unknown; recoveryProof: unknown; keyVersion: unknown },
+  input: {
+    reason: unknown;
+    envelopes: unknown;
+    recoveryEnvelope: unknown;
+    recoveryProof: unknown;
+    keyVersion: unknown;
+    /** HMAC under the outgoing vault key over a commitment to the new one (docs/cloud/key-rotation.md §3a). */
+    transitionProof: unknown;
+    /** true: the user re-entered the current recovery key, which seals the new vault key and stays valid. */
+    keepRecovery?: unknown;
+  },
   ctx: RequestContext,
 ) {
   assertCloudSession(session, 'write');
@@ -88,23 +98,46 @@ export async function startRotation(
   if (typeof input.recoveryEnvelope !== 'string' || !B64_KW.test(input.recoveryEnvelope)) throw invalid('recovery envelope');
   if (typeof input.recoveryProof !== 'string' || !B64_32.test(input.recoveryProof)) throw invalid('recovery proof');
   const verifier = createHash('sha256').update(Buffer.from(input.recoveryProof, 'base64')).digest();
+  if (typeof input.transitionProof !== 'string' || !B64_32.test(input.transitionProof)) throw invalid('transition proof');
+  const keepRecovery = input.keepRecovery === true;
   await rateLimit(`cloud:rotate:${session.user_id}`, 5, 3600);
   return asUser(session.user_id, async () => {
     await requireActiveVaultDevice(session);
-    const vault = await one<{ id: string; key_version: number }>(`select id, key_version from vaults for update`);
+    const vault = await one<{ id: string; key_version: number; recovery_verifier: Buffer; recovery_set_at: Date }>(
+      `select id, key_version, recovery_verifier, recovery_set_at from vaults for update`,
+    );
     if (!vault) throw new UserFacingError('no_vault', 'Set up your encrypted vault first.', 409);
     if (Number(input.keyVersion) !== vault.key_version) throw new UserFacingError('stale_key', 'This browser is using an old vault key. Reload the page to continue.', 409);
     if (await one(`select 1 from vault_rotations where vault_id = $1 and status = 'in_progress'`, [vault.id])) {
       throw new UserFacingError('rotation_in_progress', 'A key replacement is already in progress.', 409);
+    }
+    if (keepRecovery) {
+      // Keeping the recovery key needs proof the user has it…
+      if (!timingSafeEqual(vault.recovery_verifier, verifier)) {
+        throw new UserFacingError('recovery_mismatch', 'That isn’t your current recovery key.', 403);
+      }
+      // …and is refused if a browser that unlocked with it has since been removed: that browser may have kept it.
+      const exposed = await one(
+        `select 1 from vault_devices where approved_via = 'recovery' and status = 'revoked' and approved_at >= $1`,
+        [vault.recovery_set_at],
+      );
+      if (exposed) {
+        throw new UserFacingError(
+          'recovery_replacement_required',
+          'A browser you removed was unlocked with your recovery key, so it has to be replaced this time.',
+          409,
+        );
+      }
     }
     const active = await query<{ id: string }>(`select id from vault_devices where status = 'active'`);
     const same = active.length === envelopes.size && active.every((d) => envelopes.has(d.id));
     if (!same) throw new UserFacingError('devices_changed', 'The browsers with access changed. Reload and try again.', 409);
     for (const [id, env] of envelopes) await query(`update vault_devices set next_envelope = $2 where id = $1`, [id, env]);
     const row = await one<{ id: string }>(
-      `insert into vault_rotations (user_id, vault_id, from_version, to_version, status, reason, started_by, next_recovery_envelope, next_recovery_verifier)
-       values ($1, $2, $3, $3 + 1, 'in_progress', $4, $5, $6, $7) returning id`,
-      [session.user_id, vault.id, vault.key_version, reason, session.device_id, input.recoveryEnvelope, verifier],
+      `insert into vault_rotations (user_id, vault_id, from_version, to_version, status, reason, started_by, next_recovery_envelope, next_recovery_verifier,
+                                   transition_proof, keep_recovery)
+       values ($1, $2, $3, $3 + 1, 'in_progress', $4, $5, $6, $7, $8, $9) returning id`,
+      [session.user_id, vault.id, vault.key_version, reason, session.device_id, input.recoveryEnvelope, verifier, input.transitionProof, keepRecovery],
     );
     await recordEvent({ type: 'cloud.rotation_started', userId: session.user_id, deviceId: session.device_id, sessionId: session.id, detail: { reason } }, ctx);
     return { rotationId: row!.id, fromVersion: vault.key_version, toVersion: vault.key_version + 1 };
@@ -180,7 +213,8 @@ export async function commitRotation(session: SessionRecord, input: { rotationId
       throw new UserFacingError('rotation_incomplete', 'Some items haven’t been re-encrypted yet.', 409, left);
     }
     await query(
-      `update vaults v set key_version = r.to_version, recovery_envelope = r.next_recovery_envelope, recovery_verifier = r.next_recovery_verifier
+      `update vaults v set key_version = r.to_version, recovery_envelope = r.next_recovery_envelope, recovery_verifier = r.next_recovery_verifier,
+              recovery_set_at = case when r.keep_recovery then v.recovery_set_at else now() end
          from vault_rotations r where r.id = $1 and v.id = r.vault_id`,
       [r.id],
     );

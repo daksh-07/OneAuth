@@ -13,6 +13,7 @@ import { FileBrowser } from './file-browser';
 import { VaultDevices } from './vault-devices';
 import { VaultSetup } from './vault-setup';
 import { RotateKeyDialog, RotationInProgress } from './key-rotation';
+import { ConfirmThisBrowser } from './confirm-browser';
 
 type Phase =
   | { kind: 'loading' }
@@ -20,7 +21,7 @@ type Phase =
   | { kind: 'setup' }
   | { kind: 'pending'; fingerprint: string }
   | { kind: 'removed' }
-  | { kind: 'ready'; vaultKey: Uint8Array; keyVersion: number };
+  | { kind: 'ready'; vaultKey: Uint8Array; keyVersion: number; trusted: boolean };
 
 export function CloudApp({ userId, initialFolder = null }: { userId: string; initialFolder?: string | null }) {
   const [phase, setPhase] = useState<Phase>({ kind: 'loading' });
@@ -28,6 +29,7 @@ export function CloudApp({ userId, initialFolder = null }: { userId: string; ini
   const [device, setDevice] = useState<{ keys: CryptoKeyPair; jwk: PublicDeviceJwk } | null>(null);
   const [rotate, setRotate] = useState<{ reason: 'device_removed' | 'manual' } | null>(null);
   const [removedName, setRemovedName] = useState<string | null>(null);
+  const [confirmCode, setConfirmCode] = useState<string | null>(null);
 
   // Whether this browser had a vault record during this visit: if it disappears, access was declined or removed.
   const hadRecord = useRef(false);
@@ -35,6 +37,13 @@ export function CloudApp({ userId, initialFolder = null }: { userId: string; ini
   useEffect(() => {
     phaseRef.current = phase;
   }, [phase]);
+
+  // A key this browser couldn't verify by itself: show the code to compare with a browser that has it.
+  const vaultIdForCode = state?.vault?.id;
+  useEffect(() => {
+    if (phase.kind !== 'ready' || phase.trusted || !device || !vaultIdForCode) return;
+    void cloud.confirmationCode(phase.vaultKey, vaultIdForCode, phase.keyVersion, device.jwk).then(setConfirmCode);
+  }, [phase, device, vaultIdForCode]);
   const deviceRef = useRef<{ keys: CryptoKeyPair; jwk: PublicDeviceJwk } | null>(null);
 
   const sync = useCallback(async (opts: { askAgain?: boolean } = {}) => {
@@ -62,7 +71,10 @@ export function CloudApp({ userId, initialFolder = null }: { userId: string; ini
         const keyVersion = s.vault!.key_version;
         // Unlock again whenever the vault key was replaced (by this or another browser):
         // a browser still holding the old key would otherwise write under it.
-        const unlockNow = async () => ({ kind: 'ready' as const, vaultKey: await cloud.unlock(s, dev.keys.privateKey), keyVersion });
+        const unlockNow = async (): Promise<Phase> => {
+          const u = await cloud.unlock(s, dev.keys.privateKey, userId);
+          return { kind: 'ready', vaultKey: u.vaultKey, keyVersion: u.keyVersion, trusted: u.trust === 'trusted' };
+        };
         const current = phaseRef.current;
         setPhase(current.kind === 'ready' && current.keyVersion === keyVersion ? current : await unlockNow());
       } else {
@@ -73,6 +85,9 @@ export function CloudApp({ userId, initialFolder = null }: { userId: string; ini
         setPhase({ kind: 'error', message: 'This session was started before Cloud was enabled. Sign out and sign in again with your passkey.', signInAgain: true });
       } else if (err instanceof ApiError) {
         setPhase({ kind: 'error', message: err.message });
+      } else if (err instanceof cloud.VaultTrustError) {
+        // Rollback or substitution: never use the key. Shown, not retried automatically.
+        setPhase({ kind: 'error', message: `${err.message} Remove this browser’s access from another approved browser, and replace your vault key.`, signInAgain: true });
       } else {
         setPhase({ kind: 'error', message: 'This browser couldn’t unlock your vault. Its stored key may have been cleared. Ask for approval again, or use your recovery key.' });
       }
@@ -150,13 +165,40 @@ export function CloudApp({ userId, initialFolder = null }: { userId: string; ini
           The request was declined, or access was removed from another device.
         </Notice>
       ) : phase.kind === 'setup' && device ? (
-        <VaultSetup jwk={device.jwk} onCreated={() => void sync()} />
+        <VaultSetup jwk={device.jwk} userId={userId} onCreated={() => void sync()} />
       ) : phase.kind === 'pending' && device ? (
-        <DevicePending fingerprint={phase.fingerprint} jwk={device.jwk} onUnlocked={() => void sync()} />
+        <DevicePending
+          fingerprint={phase.fingerprint}
+          jwk={device.jwk}
+          userId={userId}
+          keyVersion={state?.vault?.key_version ?? 1}
+          onUnlocked={() => void sync()}
+        />
       ) : phase.kind === 'ready' && state?.vault && device ? (
         <div className="space-y-6">
           {state.rotation ? (
-            <RotationInProgress state={state} vaultKey={phase.vaultKey} privateKey={device.keys.privateKey} onDone={() => void sync()} />
+            <RotationInProgress
+              state={state}
+              userId={userId}
+              vaultKey={phase.vaultKey}
+              privateKey={device.keys.privateKey}
+              onDone={() => void sync()}
+            />
+          ) : !phase.trusted ? (
+            <ConfirmThisBrowser
+              code={confirmCode}
+              onMatch={async () => {
+                await cloud.confirmThisBrowser(userId, phase.keyVersion);
+                setPhase({ ...phase, trusted: true });
+              }}
+              onMismatch={async () => {
+                const mine = state.devices.find((d) => d.is_current);
+                if (mine) await cloud.forgetThisBrowser(userId, mine.id).catch(() => {});
+                deviceRef.current = null;
+                hadRecord.current = true;
+                setPhase({ kind: 'removed' });
+              }}
+            />
           ) : removedName ? (
             <Notice
               tone="info"
@@ -182,7 +224,7 @@ export function CloudApp({ userId, initialFolder = null }: { userId: string; ini
             keyVersion={phase.keyVersion}
             vaultId={state.vault.id}
             usage={state.usage}
-            readOnly={Boolean(state.rotation)}
+            readOnly={Boolean(state.rotation) || !phase.trusted}
             onUsageChange={() => void sync()}
           />
           <div className="grid gap-6 lg:ml-[224px] lg:grid-cols-2">
@@ -191,7 +233,8 @@ export function CloudApp({ userId, initialFolder = null }: { userId: string; ini
               devices={state.devices}
               vaultKey={phase.vaultKey}
               keyVersion={phase.keyVersion}
-              rotating={Boolean(state.rotation)}
+              vaultId={state.vault.id}
+              rotating={Boolean(state.rotation) || !phase.trusted}
               onChange={() => void sync()}
               onRemoved={(name) => {
                 setRemovedName(name);
@@ -211,6 +254,7 @@ export function CloudApp({ userId, initialFolder = null }: { userId: string; ini
               state={state}
               vaultKey={phase.vaultKey}
               reason={rotate.reason}
+              userId={userId}
               onClose={() => setRotate(null)}
               onDone={() => {
                 setRotate(null);

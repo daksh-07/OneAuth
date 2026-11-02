@@ -11,7 +11,19 @@ import { VaultCryptoError, type PublicDeviceJwk } from '@/lib/vault/crypto';
 import * as cloud from '@/lib/vault/client';
 
 /** Shown on a browser that has registered its key but hasn't been approved yet. */
-export function DevicePending({ fingerprint, jwk, onUnlocked }: { fingerprint: string; jwk: PublicDeviceJwk; onUnlocked: () => void }) {
+export function DevicePending({
+  fingerprint,
+  jwk,
+  userId,
+  keyVersion,
+  onUnlocked,
+}: {
+  fingerprint: string;
+  jwk: PublicDeviceJwk;
+  userId: string;
+  keyVersion: number;
+  onUnlocked: () => void;
+}) {
   const [recovering, setRecovering] = useState(false);
   const [key, setKey] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -22,7 +34,7 @@ export function DevicePending({ fingerprint, jwk, onUnlocked }: { fingerprint: s
     setBusy(true);
     setError(null);
     try {
-      await withStepUp(() => cloud.recoverWithKey(key, jwk));
+      await withStepUp(() => cloud.recoverWithKey(key, jwk, userId, keyVersion));
       onUnlocked();
     } catch (err) {
       if (err instanceof VaultCryptoError) setError(err.message);

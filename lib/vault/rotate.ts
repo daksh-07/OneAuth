@@ -56,11 +56,25 @@ export async function prepareRotation(): Promise<PreparedRotation> {
   return { vaultKey: v.generateVaultKey(), recovery: await v.generateRecoveryKey() };
 }
 
-/** The start request: the new key wrapped to every active browser, and the new recovery material. */
-export async function startPayload(p: PreparedRotation, vaultId: string, active: { id: string; public_jwk: v.PublicDeviceJwk }[]) {
+/**
+ * The start request: the new key wrapped (with its version) to every active
+ * browser, a transition proof under the outgoing key, and recovery material:
+ * either sealed under a new recovery key, or, if the user re-entered the
+ * current one (`keepRecoveryKey`), under that.
+ */
+export async function startPayload(
+  p: PreparedRotation,
+  vaultId: string,
+  active: { id: string; public_jwk: v.PublicDeviceJwk }[],
+  opts: { oldKey: Uint8Array; fromVersion: number; keepRecoveryKey?: Uint8Array },
+) {
+  const to = opts.fromVersion + 1;
+  const rk = opts.keepRecoveryKey ?? p.recovery.bytes;
   return {
-    envelopes: await Promise.all(active.map(async (d) => ({ vaultDeviceId: d.id, envelope: await v.wrapVaultKeyForDevice(p.vaultKey, d.public_jwk) }))),
-    recoveryEnvelope: await v.wrapVaultKeyForRecovery(p.vaultKey, p.recovery.bytes, vaultId),
-    recoveryProof: await v.recoveryProof(p.recovery.bytes, vaultId),
+    envelopes: await Promise.all(active.map(async (d) => ({ vaultDeviceId: d.id, envelope: await v.wrapVaultKeyForDevice(p.vaultKey, d.public_jwk, to) }))),
+    recoveryEnvelope: await v.wrapVaultKeyForRecovery(p.vaultKey, rk, vaultId),
+    recoveryProof: await v.recoveryProof(rk, vaultId),
+    transitionProof: await v.transitionProof(opts.oldKey, p.vaultKey, vaultId, opts.fromVersion),
+    keepRecovery: Boolean(opts.keepRecoveryKey),
   };
 }

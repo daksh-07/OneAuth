@@ -19,6 +19,8 @@ export interface UnlockedVault {
   vaultKey: Uint8Array;
   vaultId: string;
   keyVersion: number;
+  /** false until this browser has confirmed the key (Cloud page): items are shown but not changed. */
+  trusted: boolean;
 }
 
 interface Decoded {
@@ -160,12 +162,17 @@ export function SpaceItems({
 
   return (
     <>
+      {vault && !vault.trusted ? (
+        <p className="text-[13px] text-muted">
+          Confirm this browser on the Cloud page before changing shortcuts or bookmarks here. Until then they’re read-only.
+        </p>
+      ) : null}
       <Panel>
         <PanelHeader
           title="Shortcuts"
           description="The places you open first, on any approved browser."
           action={
-            <Button size="sm" variant="secondary" onClick={() => setEditing({ kind: 'shortcut' })}>
+            <Button size="sm" variant="secondary" onClick={() => setEditing({ kind: 'shortcut' })} disabled={!vault?.trusted}>
               <Plus />
               Add shortcut
             </Button>
@@ -186,7 +193,9 @@ export function SpaceItems({
                     <span className="block truncate text-[12px] text-muted">{s.url ? hostOf(s.url) : 'Not a web link'}</span>
                   </span>
                 </SafeLink>
-                <ItemMenu name={s.title} onEdit={() => setEditing({ kind: 'shortcut', item: s })} onRemove={() => remove(s)} className="absolute top-2 right-2" />
+                {vault?.trusted ? (
+                  <ItemMenu name={s.title} onEdit={() => setEditing({ kind: 'shortcut', item: s })} onRemove={() => remove(s)} className="absolute top-2 right-2" />
+                ) : null}
               </li>
             ))}
           </ul>
@@ -198,7 +207,7 @@ export function SpaceItems({
           title="Bookmarks"
           description="Encrypted in this browser; OneAuth can’t see the links."
           action={
-            <Button size="sm" variant="secondary" onClick={() => setEditing({ kind: 'bookmark' })}>
+            <Button size="sm" variant="secondary" onClick={() => setEditing({ kind: 'bookmark' })} disabled={!vault?.trusted}>
               <Plus />
               Add bookmark
             </Button>
@@ -229,14 +238,14 @@ export function SpaceItems({
                   </span>
                   <span className="block truncate text-[12px] text-muted">{b.note ? `${b.note} · ` : ''}{b.url ? hostOf(b.url) : 'Not a web link'}</span>
                 </SafeLink>
-                <ItemMenu name={b.title} onEdit={() => setEditing({ kind: 'bookmark', item: b })} onRemove={() => remove(b)} />
+                {vault?.trusted ? <ItemMenu name={b.title} onEdit={() => setEditing({ kind: 'bookmark', item: b })} onRemove={() => remove(b)} /> : null}
               </li>
             ))}
           </ul>
         )}
       </Panel>
 
-      {editing && vault && spaceKey ? (
+      {editing && vault?.trusted && spaceKey ? (
         <ItemDialog
           key={editing.item?.row.id ?? `new-${editing.kind}`}
           kind={editing.kind}

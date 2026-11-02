@@ -46,4 +46,16 @@ export async function saveDeviceKeys(userId: string, keys: CryptoKeyPair): Promi
 /** Forgets this browser's key pair (it will need approving again). */
 export async function clearDeviceKeys(userId: string): Promise<void> {
   await run('readwrite', (s) => s.delete(userId));
+  await run('readwrite', (s) => s.delete(`${userId}:pins`));
+}
+
+/** Per-account trust pins (lib/vault/trust.ts), kept beside the device key; CryptoKeys stay non-extractable. */
+export function pinStore(userId: string) {
+  const key = `${userId}:pins`;
+  return {
+    get: () => run('readonly', (s) => s.get(key)) as Promise<import('./trust').Pins | undefined>,
+    set: async (pins: import('./trust').Pins) => {
+      await run('readwrite', (s) => s.put(pins, key));
+    },
+  };
 }

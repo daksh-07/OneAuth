@@ -18,6 +18,7 @@ export function VaultDevices({
   devices,
   vaultKey,
   keyVersion,
+  vaultId,
   rotating,
   onChange,
   onRemoved,
@@ -28,6 +29,7 @@ export function VaultDevices({
   devices: cloud.VaultDevice[];
   vaultKey: Uint8Array;
   keyVersion: number;
+  vaultId: string;
   rotating: boolean;
   onChange: () => void;
   onRemoved: (name: string) => void;
@@ -36,6 +38,7 @@ export function VaultDevices({
 }) {
   const [approving, setApproving] = useState<cloud.VaultDevice | null>(null);
   const [removing, setRemoving] = useState<cloud.VaultDevice | null>(null);
+  const [showing, setShowing] = useState<cloud.VaultDevice | null>(null);
   const pending = devices.filter((d) => d.status === 'pending');
   const active = devices.filter((d) => d.status === 'active');
 
@@ -87,6 +90,11 @@ export function VaultDevices({
                   <p className="font-mono text-[12px] text-muted">{d.fingerprint}</p>
                 </div>
               </div>
+              {!d.is_current ? (
+                <Button size="sm" variant="ghost" onClick={() => setShowing(d)} aria-label={`Show confirmation code for ${d.device_name}`}>
+                  Code
+                </Button>
+              ) : null}
               <Button size="sm" variant="ghost" className="text-danger" onClick={() => setRemoving(d)}>
                 {d.is_current ? (
                   <>
@@ -107,9 +115,11 @@ export function VaultDevices({
         device={approving}
         vaultKey={vaultKey}
         keyVersion={keyVersion}
+        vaultId={vaultId}
         onClose={() => setApproving(null)}
         onDone={onChange}
       />
+      <CodeDialog key={showing?.id ?? 'none'} device={showing} vaultKey={vaultKey} vaultId={vaultId} keyVersion={keyVersion} onClose={() => setShowing(null)} />
       <RemoveDialog
         key={removing?.id ?? 'none'}
         device={removing}
@@ -125,17 +135,20 @@ function ApproveDialog({
   device,
   vaultKey,
   keyVersion,
+  vaultId,
   onClose,
   onDone,
 }: {
   device: cloud.VaultDevice | null;
   vaultKey: Uint8Array;
   keyVersion: number;
+  vaultId: string;
   onClose: () => void;
   onDone: () => void;
 }) {
   const toast = useToast();
   const [code, setCode] = useState<string | null>(null);
+  const [confirmation, setConfirmation] = useState<string | null>(null);
   const [busy, setBusy] = useState<'approve' | 'deny' | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -149,9 +162,16 @@ function ApproveDialog({
     setBusy(kind);
     setError(null);
     try {
-      if (kind === 'approve') await withStepUp(() => cloud.approveDevice(device, vaultKey, keyVersion));
-      else await withStepUp(() => cloud.revokeVaultDevice(device.id));
-      toast({ tone: 'success', message: kind === 'approve' ? `${device.device_name} can now open your files` : 'Request declined' });
+      if (kind === 'approve') {
+        await withStepUp(() => cloud.approveDevice(device, vaultKey, keyVersion));
+        toast({ tone: 'success', message: `${device.device_name} can now open your files` });
+        // Second check (G5): the new browser shows a code from the key it actually received.
+        setConfirmation(await cloud.confirmationCode(vaultKey, vaultId, keyVersion, device.public_jwk));
+        onDone();
+        return;
+      }
+      await withStepUp(() => cloud.revokeVaultDevice(device.id));
+      toast({ tone: 'success', message: 'Request declined' });
       onClose();
       onDone();
     } catch (err) {
@@ -164,6 +184,21 @@ function ApproveDialog({
   return (
     <DialogRoot open={device !== null} onOpenChange={(o) => !o && onClose()}>
       <DialogContent title="Approve this browser?" description={device ? `${device.device_name} is asking to open your encrypted files.` : undefined}>
+        {confirmation ? (
+          <div>
+            <p className="text-sm font-medium">Approved. One last check:</p>
+            <p className="mt-2 text-[13px] leading-relaxed text-muted">
+              The other browser now shows a confirmation code. It should be exactly this. If it isn’t, choose “They don’t match” there.
+            </p>
+            <p className="mt-3 font-mono text-2xl font-semibold tracking-[0.15em] sm:text-3xl" data-testid="approver-confirmation-code">
+              {confirmation}
+            </p>
+            <div className="mt-5 flex justify-end">
+              <Button onClick={onClose}>Done</Button>
+            </div>
+          </div>
+        ) : (
+          <>
         <ol className="space-y-2 text-[13px] leading-relaxed text-muted">
           <li>1. Look at the other screen. It shows a security code.</li>
           <li>2. Check it matches this code exactly, all 12 characters.</li>
@@ -188,6 +223,8 @@ function ApproveDialog({
             Codes match: approve
           </Button>
         </div>
+          </>
+        )}
       </DialogContent>
     </DialogRoot>
   );
@@ -259,6 +296,42 @@ function RemoveDialog({
           <Button variant="danger" onClick={remove} loading={busy}>
             {self ? 'Remove this browser' : 'Remove access'}
           </Button>
+        </div>
+      </DialogContent>
+    </DialogRoot>
+  );
+}
+
+/** The confirmation code another browser should show for the current vault key. */
+function CodeDialog({
+  device,
+  vaultKey,
+  vaultId,
+  keyVersion,
+  onClose,
+}: {
+  device: cloud.VaultDevice | null;
+  vaultKey: Uint8Array;
+  vaultId: string;
+  keyVersion: number;
+  onClose: () => void;
+}) {
+  const [code, setCode] = useState<string | null>(null);
+  useEffect(() => {
+    if (device) void cloud.confirmationCode(vaultKey, vaultId, keyVersion, device.public_jwk).then(setCode);
+  }, [device, vaultKey, vaultId, keyVersion]);
+  return (
+    <DialogRoot open={device !== null} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent title="Confirmation code" description={device ? `If ${device.device_name} asks you to check its confirmation code, it should show:` : undefined}>
+        <p className="font-mono text-2xl font-semibold tracking-[0.15em] sm:text-3xl" data-testid="device-confirmation-code">
+          {code ?? '…'}
+        </p>
+        <p className="mt-3 text-[13px] leading-relaxed text-muted">
+          A different code means the vault key that browser received didn’t come from you. Choose “They don’t match” there, then replace your vault
+          key.
+        </p>
+        <div className="mt-5 flex justify-end">
+          <Button onClick={onClose}>Done</Button>
         </div>
       </DialogContent>
     </DialogRoot>

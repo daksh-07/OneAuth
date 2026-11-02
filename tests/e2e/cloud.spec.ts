@@ -60,7 +60,7 @@ test('flagship: encrypted document and workspace move to an approved second brow
   await expect(a.getByText('It sees sizes, dates and how many items you have', { exact: false })).toBeVisible();
   await a.getByRole('button', { name: 'Create my vault' }).click();
   await expectNoA11yViolations(a);
-  await confirmRecoveryKey(a, 'Create vault');
+  const recoveryKey = await confirmRecoveryKey(a, 'Create vault');
   await expect(a.getByText('No files here yet')).toBeVisible();
 
   // 3. Upload an encrypted test document (two transfer parts) and a second file to tamper with later.
@@ -155,6 +155,17 @@ test('flagship: encrypted document and workspace move to an approved second brow
   await a.getByRole('button', { name: 'Codes match: approve' }).click();
   await expect(a.getByText('can now open your files')).toBeVisible();
 
+  // 6b. Second check (G5): the phone shows a code from the vault key it actually received; it must match the laptop's.
+  const approverCode = (await a.getByTestId('approver-confirmation-code').textContent())!.trim();
+  expect(approverCode).toMatch(/^[A-Z2-7]{4}-[A-Z2-7]{4}-[A-Z2-7]{4}$/);
+  await a.getByRole('button', { name: 'Done' }).click();
+  await expect(b.getByTestId('confirmation-code')).toHaveText(approverCode, { timeout: 20_000 });
+  // Until confirmed, the phone can read but not write.
+  await expect(b.getByRole('button', { name: 'Upload', exact: true })).toBeDisabled();
+  await b.getByRole('button', { name: 'Codes match' }).click();
+  await expect(b.getByTestId('confirmation-code')).toHaveCount(0);
+  await expect(b.getByRole('button', { name: 'Upload', exact: true })).toBeEnabled();
+
   // 7. Download and decrypt the document on the phone.
   await expect(b.getByTestId('cloud-items').getByText('flagship-test.txt')).toBeVisible({ timeout: 20_000 });
   const got = await readDownload(b, async () => {
@@ -195,8 +206,10 @@ test('flagship: encrypted document and workspace move to an approved second brow
   await expect(a.getByText('can no longer open your files').first()).toBeVisible();
   await a.getByRole('button', { name: 'Replace vault key' }).click();
   await expect(a.getByText('Doesn’t undo:')).toBeVisible();
-  await a.getByRole('button', { name: 'Continue' }).click();
-  await confirmRecoveryKey(a, 'Replace vault key');
+  // Keep the existing recovery key by re-entering it (the phone never used it, so that's allowed).
+  await a.getByRole('button', { name: 'Keep my recovery key' }).click();
+  await a.getByLabel('Current recovery key').fill(recoveryKey);
+  await a.getByRole('button', { name: 'Replace vault key' }).click();
   await expect(a.getByRole('dialog')).toHaveCount(0, { timeout: 30_000 });
   const versions = await sql<{ key_version: number }>(`select key_version from vaults v join users u on u.id = v.user_id where u.display_name = $1`, [name]);
   expect(versions[0].key_version).toBe(2);

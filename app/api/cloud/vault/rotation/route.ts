@@ -11,7 +11,15 @@ export const POST = jsonRoute(async (req) => {
   const b = await readJson<Record<string, unknown>>(req);
   return startRotation(
     session,
-    { reason: b.reason, envelopes: b.envelopes, recoveryEnvelope: b.recoveryEnvelope, recoveryProof: b.recoveryProof, keyVersion: b.keyVersion },
+    {
+      reason: b.reason,
+      envelopes: b.envelopes,
+      recoveryEnvelope: b.recoveryEnvelope,
+      recoveryProof: b.recoveryProof,
+      keyVersion: b.keyVersion,
+      transitionProof: b.transitionProof,
+      keepRecovery: b.keepRecovery,
+    },
     await requestContext(),
   );
 });

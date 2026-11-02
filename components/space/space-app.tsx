@@ -52,11 +52,14 @@ export function SpaceApp({ userId, deviceId, cloudEnabled }: { userId: string; d
     return () => clearTimeout(t);
   }, [load]);
 
-  // Unlock once per visit, only if this browser is already approved for the vault (never registers anything).
+  // Unlock only if this browser is already approved for the vault (never registers anything). Re-checked on
+  // every sync tick, so a vault key replaced on another browser is picked up without a reload (G4).
   useEffect(() => {
     if (!cloudEnabled) return;
-    void cloud.tryUnlock(userId).then(setVault);
-  }, [cloudEnabled, userId]);
+    void cloud.tryUnlock(userId).then((next) =>
+      setVault((prev) => (prev && next && prev.keyVersion === next.keyVersion && prev.trusted === next.trusted ? prev : next)),
+    );
+  }, [cloudEnabled, userId, tick]);
 
   // Sync with the account's other browsers: refresh every 20 seconds while visible, and on return to the tab.
   useEffect(() => {

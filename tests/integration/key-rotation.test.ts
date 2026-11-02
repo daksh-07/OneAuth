@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { query } from '../helpers/admin';
-import { createUser, ctx, type TestUser } from '../helpers/fixtures';
+import { createUser, ctx } from '../helpers/fixtures';
 import { download, secondBrowser, setUpVault, upload, type Browser } from '../helpers/cloud';
 import * as vault from '@/lib/server/cloud/vault';
 import * as items from '@/lib/server/cloud/items';
@@ -61,18 +61,17 @@ async function drain(x: Browser, oldKey: Uint8Array, newKey: Uint8Array, vaultId
   throw new Error('rotation did not drain');
 }
 
-async function start(x: Browser, user: TestUser, vaultId: string, reason = 'device_removed') {
+async function start(x: Browser, oldKey: Uint8Array, vaultId: string, reason = 'device_removed') {
   const prepared = await prepareRotation();
-  const body = await startPayload(prepared, vaultId, await activeDevices(await x.session()));
+  const body = await startPayload(prepared, vaultId, await activeDevices(await x.session()), { oldKey, fromVersion: 1 });
   const res = await rot.startRotation(await x.session(), { reason, keyVersion: 1, ...body }, ctx());
-  void user;
   return { prepared, res };
 }
 
 describe('vault-key rotation', () => {
   it('re-keys everything, reaches an offline browser, and retires the old vault key and recovery key', async () => {
     const s = await scenario();
-    const { prepared, res } = await start(s.a, s.user, s.vaultId);
+    const { prepared, res } = await start(s.a, s.vk, s.vaultId);
     expect(res).toMatchObject({ fromVersion: 1, toVersion: 2 });
     await drain(s.a, s.vk, prepared.vaultKey, s.vaultId);
     await rot.commitRotation(await s.a.session(), { rotationId: res.rotationId }, ctx());
@@ -109,7 +108,7 @@ describe('vault-key rotation', () => {
 
   it('resumes an interrupted rotation from another browser', async () => {
     const s = await scenario();
-    const { prepared, res } = await start(s.a, s.user, s.vaultId);
+    const { prepared, res } = await start(s.a, s.vk, s.vaultId);
     // A re-wraps only the files, then disappears (tab closed).
     const work = await rot.rotationWork(await s.a.session());
     const partial = await rewrapBatch({ ...work, folders: [], items: [] }, s.vk, prepared.vaultKey, s.vaultId);
@@ -131,7 +130,7 @@ describe('vault-key rotation', () => {
 
   it('can be abandoned, leaving the current vault key and recovery key in force', async () => {
     const s = await scenario();
-    const { prepared, res } = await start(s.a, s.user, s.vaultId);
+    const { prepared, res } = await start(s.a, s.vk, s.vaultId);
     await drain(s.a, s.vk, prepared.vaultKey, s.vaultId);
     await rot.abortRotation(await s.a.session(), { rotationId: res.rotationId }, ctx());
     const leftovers = await query(
@@ -149,7 +148,7 @@ describe('vault-key rotation', () => {
 
   it('blocks writes under the vault key during a rotation, and stale clients after it', async () => {
     const s = await scenario();
-    const { prepared, res } = await start(s.a, s.user, s.vaultId);
+    const { prepared, res } = await start(s.a, s.vk, s.vaultId);
     const fk = await v.generateFileKey();
     const fileId = randomUUID();
     const sa = await s.a.session();
@@ -179,11 +178,11 @@ describe('vault-key rotation', () => {
     const s = await scenario();
     const prepared = await prepareRotation();
     const active = await activeDevices(await s.a.session());
-    const missing = await startPayload(prepared, s.vaultId, active.slice(0, 1));
+    const missing = await startPayload(prepared, s.vaultId, active.slice(0, 1), { oldKey: s.vk, fromVersion: 1 });
     await expect(rot.startRotation(await s.a.session(), { reason: 'manual', keyVersion: 1, ...missing }, ctx())).rejects.toMatchObject({
       code: 'devices_changed',
     });
-    const full = await startPayload(prepared, s.vaultId, active);
+    const full = await startPayload(prepared, s.vaultId, active, { oldKey: s.vk, fromVersion: 1 });
     const results = await Promise.allSettled([
       rot.startRotation(await s.a.session(), { reason: 'manual', keyVersion: 1, ...full }, ctx()),
       rot.startRotation(await s.b.session(), { reason: 'manual', keyVersion: 1, ...full }, ctx()),
@@ -197,7 +196,7 @@ describe('vault-key rotation', () => {
   it('never touches another account’s rows', async () => {
     const alice = await scenario();
     const bob = await scenario();
-    const { prepared, res } = await start(bob.a, bob.user, bob.vaultId);
+    const { prepared, res } = await start(bob.a, bob.vk, bob.vaultId);
     // Bob submits Alice's file and folder IDs with junk keys: nothing of Alice's changes.
     const out = await rot.submitRotationBatch(await bob.a.session(), {
       rotationId: res.rotationId,

@@ -60,9 +60,17 @@ export async function getVaultState(session: SessionRecord) {
           `select id, to_version, reason, started_at from vault_rotations where status = 'in_progress'`,
         )
       : null;
+    // Committed key transitions: each a MAC only a holder of the outgoing key could make. Browsers check
+    // the step from the last version they trusted before trusting a new vault key (key-rotation.md §3a).
+    const transitions = vault
+      ? await query<{ from_version: number; to_version: number; transition_proof: string | null }>(
+          `select from_version, to_version, transition_proof from vault_rotations where status = 'committed' order by to_version`,
+        )
+      : [];
     return {
       vault,
       rotation,
+      transitions,
       device: device ? { id: device.id, status: device.status, fingerprint: device.fingerprint, envelope: device.status === 'active' ? device.envelope : null } : null,
       // Only an active device may see pending requests (it's the one that can approve them).
       devices: device?.status === 'active' ? others : others.filter((o) => o.is_current),
