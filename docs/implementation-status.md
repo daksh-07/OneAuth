@@ -1,6 +1,8 @@
 # OneAuth: implementation status
 
-_Last updated: 2 November 2026 (Phase 2C)._
+_Last updated: 2 November 2026 (Phase 2D internal security review)._
+
+**Phase 2D release status:** `docs/security/{phase-2d-audit,threat-model,independent-review-package,release-gates}.md` records the evidence and open gates. A removed browser retaining the outgoing vault key can forge a transition proof with a DB-writing server; an adversarial fixture reproduces this. Cloud remains Preview-only for disposable data. This is not independent approval. The production database has migrations 0001–0003 but its restricted role is NOLOGIN, so production authentication remains unavailable.
 
 **Status labels:**
 
@@ -14,8 +16,9 @@ _Last updated: 2 November 2026 (Phase 2C)._
 
 | Branch | Head | Purpose | PR |
 | --- | --- | --- | --- |
-| `claude/oneauth-foundation-gaqvr7` | `fccc9fc` | Phase 1 identity foundation | #1 (open, not merged) |
-| `claude/oneauth-cloud-foundation` | see the PR | Cloud developer preview, Space foundation, API and native docs (stacked on the branch above) | Stacked PR into the foundation branch |
+| `claude/oneauth-foundation-gaqvr7` | `fccc9fcf54a6482cb36e354b32d9153cb0c6b147` (rechecked 2 Nov) | Phase 1 identity foundation | #1 (open, not merged) |
+| `claude/oneauth-cloud-foundation` | `abd324d` at this review | Cloud developer preview, Space foundation, API and native docs | #2 (open, not merged) |
+| `security/phase-2d` | see security PR | Internal hardening and external-review package, based on `abd324d` | Draft, not merged |
 
 ## Phase 1: identity foundation
 
@@ -28,7 +31,7 @@ _Last updated: 2 November 2026 (Phase 2C)._
 | Least-privilege runtime role with RLS tenant isolation | Implemented and verified | `tenant-isolation.test.ts`; `db-verify.mjs` in every build |
 | Shared-device behaviour, new-device alert | Implemented and verified | Integration and E2E tests |
 | Physical-device biometric testing | **Not started** | Needs real hardware (`docs/device-testing.md`). No hardware results are claimed. |
-| Production deployment | **Blocked** | `https://oneauth-gamma.vercel.app/api/health` returns 503 `database: not_configured`. The production database setup is owned by the separate task and the owner (pending Neon activation); not touched here. |
+| Production deployment | **Blocked** | `https://oneauth-gamma.vercel.app/api/health` returns 503 `database: not_configured`. Neon activation and migrations 0001–0003 are complete, but `oneauth_app` remains NOLOGIN and no restricted Production URL is configured. The separate production task owns it. |
 
 ## OneAuth Cloud (developer preview, test files only)
 
@@ -93,10 +96,12 @@ _Last updated: 2 November 2026 (Phase 2C)._
 2. Browser-delivered E2EE trusts the served JavaScript; there's no code transparency yet.
 3. The 60-bit security code relies on a person actually comparing it; this is a review item.
 4. Existing contents stay readable to a removed browser that kept keys until the user runs deep rotation (offered after a key replacement, not automatic).
-6. A removed browser colluding with the server can forge the transition proof for the step it knew. Confirmation codes rely on the user comparing them. Clearing site data resets a browser's pins.
-5. Preview and production share one Vercel project. Preview deployments share one preview database, and migrations `0004` and `0005` are additive, so PR #1's preview keeps working.
+5. A removed browser colluding with the server can forge the transition proof for the step it knew. Confirmation codes rely on the user comparing them. Clearing site data resets a browser's pins.
+6. Preview and production share one Vercel project. Preview deployments share one preview database, and migrations `0004` and `0005` are additive, so PR #1's preview keeps working.
 
 ## Next actions
+
+**Phase 2D gate:** do not enable Cloud for real data until the removed-device/server-collusion protocol is redesigned, tested and independently approved. The Phase 2D fixture demonstrates the old-key HMAC limitation; it is not a repair.
 
 1. Owner: finish production database activation (the other task), then decide on promoting PR #1.
 2. Independent review of `docs/cloud/security-design.md` (§11 checklist) before any real data.

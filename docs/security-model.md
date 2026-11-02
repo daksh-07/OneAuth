@@ -6,7 +6,7 @@ This describes what is implemented. It has **not** been independently reviewed. 
 1. The ability to act as a user (sessions, step-up state).
 2. The ability to enrol new devices into a user's account (pairing approval). This is the most valuable target.
 3. Users' security history and device list (personal information, including IP addresses).
-4. Future: encrypted file contents and keys (see [the Cloud proposal](proposals/cloud-encryption.md)).
+4. Preview-only encrypted file contents and keys (see [the Cloud design](cloud/security-design.md)); no real personal files are approved.
 
 ## Authentication
 - WebAuthn passkeys only, via `@simplewebauthn/server`. `userVerification: required` on every ceremony; registration rejects responses without the UV flag. OneAuth never receives biometric data.
@@ -62,17 +62,11 @@ OneAuth can't make a compromised computer safe. On a borrowed device with malwar
 - Rate limits, held in Postgres so they work across instances: registration 10 per 15 minutes per IP; login options 30 per 15 minutes per IP; step-up 20 per 15 minutes per session; pairing creation 20 per 10 minutes per IP; claims 30 per 10 minutes per IP; code lookup 10 per 10 minutes per user. IP comes from `x-real-ip`, set by Vercel; it can be spoofed off-platform.
 
 ## Database: what's actually enforced
-Measured on the Neon preview database by `scripts/db-verify.mjs` during the Vercel build:
-- The runtime role is `neondb_owner`. It **owns every table**, has **`BYPASSRLS`**, and is a member of `neon_superuser`. On Vercel the same credentials exist at build time and at runtime.
-- Consequently, **row-level security doesn't isolate tenants** for OneAuth's own queries. `FORCE ROW LEVEL SECURITY` wouldn't help either, because it doesn't apply to `BYPASSRLS` roles. A `SET ROLE` to a weaker role would be undone by `RESET ROLE` under SQL injection.
-- **Tenant isolation is enforced by the application layer:** every query is scoped by the session's `user_id` in its `WHERE` clause; every entry point checks scopes. It's verified by:
-  - integration BOLA tests;
-  - the hosted suite, where user B tampers with their own server-action requests to target user A's device. The server refuses, and A's export shows no change;
-  - a static test that fails if any SQL is built by string interpolation.
-- What RLS (migration `0002`) does provide: every table has RLS enabled with no policies, and `PUBLIC`, `anon` and `authenticated` privileges are revoked. **Any other role is denied** (verified: no other grantees on application tables).
-- TLS: verified client-side on Neon: TLSv1.3, certificate chain authorised. `sslmode` in URLs can't downgrade it.
-- Migrations run on a direct (unpooled) connection under an advisory lock. Re-runs are idempotent (verified on a second preview build). Production builds refuse to run against a database without `ONEAUTH_DATABASE_ENV=production`.
-- **To get database-enforced isolation later:** create a separate `NOBYPASSRLS` login role for the runtime with DML-only grants; keep owner credentials out of the runtime (migrations in a separate CI job); and add per-user policies driven by a transaction-local `oneauth.user_id`, with `SECURITY DEFINER` functions for the pre-authentication lookups (session token, credential ID, pairing secret). Tracked as a hardening item; it needs owner-provisioned credentials.
+The old preview-owner-role measurements below were superseded by migration `0003`. CI and the current Preview health check use the restricted `oneauth_app` login, with no table ownership or BYPASSRLS privilege. Migrations run separately as the owner. Sensitive tables have per-user policies; `asUser` sets `oneauth.user_id` inside a transaction, which ends before a pooled connection is reused. Pre-authentication lookups use limited SECURITY DEFINER functions. Integration tests exercise real database isolation, and application queries also check ownership and scopes.
+
+RLS here is defence against an omitted tenant predicate. PostgreSQL custom GUCs are settable by the runtime role, so **arbitrary SQL execution as `oneauth_app` could set another user ID**. Parameter binding, narrow function grants and application authorisation remain essential. Production is separate: migrations 0001–0003 were applied, but its restricted role is still NOLOGIN and no runtime URL is deployed. Do not infer production isolation from Preview.
+
+Remote database connections verify TLS certificates. Preview migration reruns were verified on builds; the production administrative runner and direct-client TLS check remain separate release gates.
 
 ## Account deletion and data
 - Deletion requires a fresh passkey assertion and typed confirmation. It cascades every user-owned row, including security events, and ends every session.
