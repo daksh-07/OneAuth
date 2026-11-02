@@ -1,9 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { query } from '../helpers/admin';
 import { createUser, signIn } from '../helpers/fixtures';
 import { validateSessionToken } from '@/lib/server/sessions';
 import * as space from '@/lib/server/space';
+import { setUpVault } from '../helpers/cloud';
+
+beforeAll(() => {
+  process.env.ONEAUTH_CLOUD_PREVIEW = '1';
+});
 
 async function secondDevice(user: Awaited<ReturnType<typeof createUser>>) {
   const res = await signIn(user);
@@ -66,7 +71,8 @@ describe('spaces', () => {
 
   it('pins and unpins Cloud items, hiding trashed ones', async () => {
     const user = await createUser();
-    const s = await user.session();
+    const { a } = await setUpVault(user);
+    const s = await a.session();
     const { spaces } = await space.listSpaces(s);
     const fileId = await cloudFile(user.userId);
     await space.pinItem(s, spaces[0].id, { fileId });

@@ -2,7 +2,8 @@
 
 import { ApiError, postJson } from '@/lib/client/api';
 import * as v from './crypto';
-import { loadDeviceKeys, saveDeviceKeys } from './keystore';
+import { clearDeviceKeys, loadDeviceKeys, saveDeviceKeys } from './keystore';
+import { downloadType, safeName } from './names';
 
 /**
  * The browser half of OneAuth Cloud: everything that touches plaintext or an
@@ -131,6 +132,15 @@ export async function approveDevice(device: VaultDevice, vaultKey: Uint8Array) {
   return postJson(`/api/cloud/vault/devices/${device.id}`, { envelope: await v.wrapVaultKeyForDevice(vaultKey, device.public_jwk), fingerprint });
 }
 
+/**
+ * Removes this browser's own vault access and deletes its device key, e.g.
+ * before handing the computer on. Signing in again later needs a new approval.
+ */
+export async function forgetThisBrowser(userId: string, vaultDeviceId: string) {
+  await request('DELETE', `/api/cloud/vault/devices/${vaultDeviceId}`);
+  await clearDeviceKeys(userId);
+}
+
 export function revokeVaultDevice(id: string) {
   return request('DELETE', `/api/cloud/vault/devices/${id}`);
 }
@@ -154,13 +164,18 @@ export function listItems(view: 'folder' | 'recent' | 'favorites' | 'trash', fol
   return request<{ folders: FolderRow[]; files: FileRow[]; path: FolderRow[] }>('GET', `/api/cloud/items?${q}`);
 }
 
+/** Decrypted metadata, with the name sanitised (decrypted values are still untrusted input). */
+function cleanMeta(meta: FileMeta): FileMeta {
+  return { ...meta, name: safeName(meta.name, 'Untitled file'), size: Number.isFinite(meta.size) ? meta.size : 0 };
+}
+
 export async function openMeta(vaultKey: Uint8Array, f: FileRow): Promise<FileMeta> {
   const fk = await v.unwrapFileKey(vaultKey, f.wrapped_key);
-  return v.openJson<FileMeta>(fk, 'meta', f.id, f.encrypted_meta);
+  return cleanMeta(await v.openJson<FileMeta>(fk, 'meta', f.id, f.encrypted_meta));
 }
 
 export async function folderName(nameKey: CryptoKey, f: FolderRow): Promise<string> {
-  return (await v.openJson<{ name: string }>(nameKey, 'folder', f.id, f.encrypted_name)).name;
+  return safeName((await v.openJson<{ name: string }>(nameKey, 'folder', f.id, f.encrypted_name)).name, 'Untitled folder');
 }
 
 export const nameKeyFor = (vaultKey: Uint8Array, vaultId: string) => v.deriveNameKey(vaultKey, vaultId);
@@ -231,9 +246,9 @@ export async function downloadFile(vaultKey: Uint8Array, f: FileRow, onProgress:
     off += p.length;
   }
   const fk = await v.unwrapFileKey(vaultKey, f.wrapped_key);
-  const meta = await v.openJson<FileMeta>(fk, 'meta', f.id, f.encrypted_meta);
+  const meta = cleanMeta(await v.openJson<FileMeta>(fk, 'meta', f.id, f.encrypted_meta));
   const plaintext = await v.decryptFile(fk, f.id, object, (d, t) => onProgress(d / t, 'decrypting'));
-  return { blob: new Blob([plaintext as Uint8Array<ArrayBuffer>], { type: meta.type }), meta };
+  return { blob: new Blob([plaintext as Uint8Array<ArrayBuffer>], { type: downloadType(meta.type) }), meta };
 }
 
 export async function renameFile(vaultKey: Uint8Array, f: FileRow, meta: FileMeta, name: string) {

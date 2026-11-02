@@ -7,6 +7,20 @@ import { encryptedSize } from '../../vault/crypto';
 import { assertCloudSession, requireActiveVaultDevice } from './access';
 import { release, reserve, settle } from './quota';
 import { PART_SIZE, storage } from './storage';
+import { rateLimit } from '../ratelimit';
+
+/** Developer-preview cap on folders per account (rows are cheap but not free). */
+export const MAX_FOLDERS = 5000;
+
+/**
+ * Serialises changes to one account's folder tree. The cycle check in
+ * updateFolder reads the tree and then writes it; without this lock two
+ * concurrent moves (A into B, B into A) can both pass and create a cycle.
+ * Must run inside the tenant transaction (released at commit).
+ */
+async function lockTree(userId: string) {
+  await one(`select pg_advisory_xact_lock(hashtextextended('oneauth.cloud-tree:' || $1, 0))`, [userId]);
+}
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** Developer-preview limit: 25 MiB of plaintext per file. */
@@ -137,8 +151,11 @@ export async function initiateUpload(session: SessionRecord, input: InitiateInpu
   const meta = sealed(input.encryptedMeta, 4000);
   if (typeof input.wrappedKey !== 'string' || !/^[A-Za-z0-9+/]{54}==$/.test(input.wrappedKey)) throw new UserFacingError('invalid', 'Invalid file key.');
   const partCount = Math.ceil(size / PART_SIZE);
+  await rateLimit(`cloud:upload:${session.user_id}`, 300, 600);
   return asUser(session.user_id, async () => {
     await requireActiveVaultDevice(session);
+    // Uploading into a folder races with deleting that folder (files cascade with it).
+    if (folderId) await lockTree(session.user_id);
     await liveFolder(folderId);
     await reserve(session.user_id, size);
     const row = await one<{ id: string }>(
@@ -239,6 +256,7 @@ export async function updateFile(
     }
     if (input.folderId !== undefined) {
       const folderId = input.folderId === null ? null : uuid(input.folderId, 'folder');
+      await lockTree(session.user_id);
       await liveFolder(folderId);
       await query(`update cloud_files set folder_id = $2, updated_at = now() where id = $1`, [fileId, folderId]);
     }
@@ -283,9 +301,13 @@ export async function createFolder(session: SessionRecord, input: { id: unknown;
   const id = uuid(input.id, 'folder');
   const parentId = input.parentId == null ? null : uuid(input.parentId, 'folder');
   const name = sealed(input.encryptedName, 1000);
+  await rateLimit(`cloud:folder:${session.user_id}`, 200, 600);
   return asUser(session.user_id, async () => {
     await requireActiveVaultDevice(session);
+    await lockTree(session.user_id);
     await liveFolder(parentId);
+    const n = await one<{ n: string }>(`select count(*) as n from cloud_folders`);
+    if (Number(n!.n) >= MAX_FOLDERS) throw new UserFacingError('limit', `You can have up to ${MAX_FOLDERS} folders during the preview.`, 409);
     const row = await one(
       `insert into cloud_folders (id, user_id, parent_id, encrypted_name) values ($1, $2, $3, $4) on conflict (id) do nothing returning id`,
       [id, session.user_id, parentId, name],
@@ -304,6 +326,7 @@ export async function updateFolder(
   const id = uuid(idRaw, 'folder');
   return asUser(session.user_id, async () => {
     await requireActiveVaultDevice(session);
+    await lockTree(session.user_id);
     if (!(await one(`select 1 from cloud_folders where id = $1 for update`, [id]))) throw notFound();
     if (input.encryptedName !== undefined) {
       await query(`update cloud_folders set encrypted_name = $2, updated_at = now() where id = $1`, [id, sealed(input.encryptedName, 1000)]);
@@ -342,6 +365,7 @@ export async function deleteFolder(session: SessionRecord, idRaw: string) {
   const id = uuid(idRaw, 'folder');
   return asUser(session.user_id, async () => {
     await requireActiveVaultDevice(session);
+    await lockTree(session.user_id);
     const busy = await one(
       `select 1 where exists (select 1 from cloud_folders where parent_id = $1) or exists (select 1 from cloud_files where folder_id = $1)`,
       [id],

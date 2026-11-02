@@ -307,13 +307,17 @@ function unbase32(s: string): Uint8Array {
 
 /**
  * Human-comparable device fingerprint: the RFC 7638 JWK thumbprint (SHA-256),
- * first 40 bits as Base32, formatted XXXX-XXXX. Both devices compute it
+ * first 60 bits as Base32, formatted XXXX-XXXX-XXXX. Both devices compute it
  * independently from the public key, so a substituted key shows a different value.
+ *
+ * 60 bits: an attacker who substitutes keys has to grind about 2^60 key pairs
+ * to match a code in the minutes before it's compared. The earlier 40-bit code
+ * (about 2^40 key generations) was within reach of rented compute.
  */
 export async function deviceFingerprint(jwk: PublicDeviceJwk): Promise<string> {
   const thumb = await calculateJwkThumbprint(jwk as JWK, 'sha256');
-  const b32 = base32(Uint8Array.from(atob(thumb.replace(/-/g, '+').replace(/_/g, '/') + '='), (c) => c.charCodeAt(0)).subarray(0, 5));
-  return `${b32.slice(0, 4)}-${b32.slice(4, 8)}`;
+  const b32 = base32(Uint8Array.from(atob(thumb.replace(/-/g, '+').replace(/_/g, '/') + '='), (c) => c.charCodeAt(0)).subarray(0, 8));
+  return `${b32.slice(0, 4)}-${b32.slice(4, 8)}-${b32.slice(8, 12)}`;
 }
 
 /** JWE (compact) ECDH-ES+A256KW / A256GCM of the vault key to a device's public key. */

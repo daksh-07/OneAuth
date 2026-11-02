@@ -123,7 +123,7 @@ describe('device envelopes (JWE ECDH-ES+A256KW)', () => {
     const a = await v.exportPublicJwk((await v.generateDeviceKeyPair()).publicKey);
     const b = await v.exportPublicJwk((await v.generateDeviceKeyPair()).publicKey);
     const fa = await v.deviceFingerprint(a);
-    expect(fa).toMatch(/^[A-Z2-7]{4}-[A-Z2-7]{4}$/);
+    expect(fa).toMatch(/^[A-Z2-7]{4}-[A-Z2-7]{4}-[A-Z2-7]{4}$/);
     expect(await v.deviceFingerprint({ ...a })).toBe(fa);
     expect(await v.deviceFingerprint(b)).not.toBe(fa);
   });

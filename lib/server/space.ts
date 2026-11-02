@@ -3,6 +3,7 @@ import { asUser, one, query } from './db';
 import { UserFacingError } from './errors';
 import { hasScope } from '../scopes';
 import type { SessionRecord } from './sessions';
+import { cloudEnabled, vaultDeviceFor } from './cloud/access';
 
 /**
  * OneAuth Space: named workspaces (e.g. Personal, Work) with pinned Cloud
@@ -176,6 +177,19 @@ export async function listPins(session: SessionRecord, spaceId: unknown) {
   const sid = id(spaceId);
   return asUser(session.user_id, async () => {
     await visibleSpace(session.device_id, sid);
+    // Wrapped file keys, encrypted metadata and sizes go only to browsers with
+    // vault access (the same rule as Cloud itself). Others learn only that
+    // something is pinned, so they can explain why it's locked.
+    const dev = cloudEnabled() ? await vaultDeviceFor(session) : null;
+    if (dev?.status !== 'active') {
+      const n = await one<{ n: string }>(
+        `select count(*) as n from space_pins p
+           left join cloud_files f on f.id = p.file_id left join cloud_folders c on c.id = p.folder_id
+          where p.space_id = $1 and ((f.id is not null and f.status = 'ready' and f.trashed_at is null) or (c.id is not null and c.trashed_at is null))`,
+        [sid],
+      );
+      return { files: [], folders: [], locked: true, lockedCount: Number(n!.n) };
+    }
     const files = await query(
       `select p.id as pin_id, f.id, f.folder_id, f.size_bytes::float8 as size_bytes, f.part_count, f.encrypted_meta, f.wrapped_key, f.favorite,
               f.created_at, f.updated_at, f.trashed_at
@@ -191,7 +205,7 @@ export async function listPins(session: SessionRecord, spaceId: unknown) {
         order by p.position, p.created_at`,
       [sid],
     );
-    return { files, folders };
+    return { files, folders, locked: false, lockedCount: 0 };
   });
 }
 

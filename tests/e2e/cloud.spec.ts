@@ -72,7 +72,7 @@ test('an encrypted file moves between two approved browsers, and access can be r
   await b.goto('/cloud');
   await expect(b.getByRole('heading', { name: 'Approve this browser from another device' })).toBeVisible();
   const codeB = (await b.getByTestId('device-fingerprint').textContent())!.trim();
-  expect(codeB).toMatch(/^[A-Z2-7]{4}-[A-Z2-7]{4}$/);
+  expect(codeB).toMatch(/^[A-Z2-7]{4}-[A-Z2-7]{4}-[A-Z2-7]{4}$/);
   await expectNoA11yViolations(b);
   await b.screenshot({ path: `${SHOTS}/cloud-pending-mobile.png`, fullPage: true });
 

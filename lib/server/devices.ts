@@ -105,7 +105,7 @@ export async function revokeDevice(userId: string, deviceId: string, actorSessio
     await query(`update device_grants set revoked_at = now() where device_id = $1 and revoked_at is null`, [deviceId]);
     // Disconnecting a device also ends its access to encrypted Cloud files (docs/cloud/security-design.md §8).
     await query(
-      `update vault_devices set status = 'revoked', envelope = null, revoked_at = now() where device_id = $1 and status <> 'revoked'`,
+      `update vault_devices set status = 'revoked', envelope = null, next_envelope = null, revoked_at = now() where device_id = $1 and status <> 'revoked'`,
       [deviceId],
     );
     await recordEvent({ type: 'device.revoked', userId, deviceId, sessionId: actorSessionId }, ctx);

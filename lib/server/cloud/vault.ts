@@ -8,6 +8,7 @@ import type { SessionRecord } from '../sessions';
 import { deviceFingerprint, isPublicDeviceJwk, type PublicDeviceJwk } from '../../vault/crypto';
 import { assertCloudSession, requireActiveVaultDevice, vaultDeviceFor } from './access';
 import { usageFor } from './quota';
+import { rateLimit } from '../ratelimit';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const B64_KW = /^[A-Za-z0-9+/]{54}==$/; // 40-byte AES-KW output
@@ -101,6 +102,7 @@ export async function registerVaultDevice(session: SessionRecord, input: { publi
   assertJwk(input.publicJwk);
   const jwk = input.publicJwk;
   const fingerprint = await deviceFingerprint(jwk);
+  await rateLimit(`cloud:register:${session.user_id}`, 10, 600);
   return asUser(session.user_id, async () => {
     const vault = await one<{ id: string }>(`select id from vaults where user_id = $1`, [session.user_id]);
     if (!vault) throw new UserFacingError('no_vault', 'Set up your encrypted vault first.', 409);
@@ -130,10 +132,16 @@ export async function approveVaultDevice(session: SessionRecord, targetId: strin
   if (!UUID.test(targetId)) throw new UserFacingError('not_found', 'Device not found.', 404);
   assertEnvelope(input.envelope);
   const envelope = input.envelope;
+  await rateLimit(`cloud:approve:${session.user_id}`, 30, 600);
   return asUser(session.user_id, async () => {
     await requireActiveVaultDevice(session);
+    // The underlying device must still be connected: a leftover request from a
+    // disconnected device must never receive the vault key.
     const target = await one<{ id: string; status: string; fingerprint: string; device_id: string }>(
-      `select id, status, fingerprint, device_id from vault_devices where id = $1 for update`,
+      `select vd.id, vd.status, vd.fingerprint, vd.device_id
+         from vault_devices vd join devices d on d.id = vd.device_id
+        where vd.id = $1 and d.revoked_at is null and d.kind = 'owned'
+          for update of vd`,
       [targetId],
     );
     if (!target || target.status !== 'pending') throw new UserFacingError('not_pending', 'That device isn’t waiting for approval.', 409);
@@ -162,6 +170,7 @@ export async function recoverVaultDevice(session: SessionRecord, input: { envelo
   assertEnvelope(input.envelope);
   const envelope = input.envelope;
   const digest = proofDigest(input.recoveryProof);
+  await rateLimit(`cloud:recover:${session.user_id}`, 10, 3600);
   return asUser(session.user_id, async () => {
     const dev = await vaultDeviceFor(session);
     if (!dev || dev.status !== 'pending') throw new UserFacingError('not_pending', 'Register this device first.', 409);
@@ -180,13 +189,18 @@ export async function revokeVaultDevice(session: SessionRecord, targetId: string
   requireFreshReauth(session);
   if (!UUID.test(targetId)) throw new UserFacingError('not_found', 'Device not found.', 404);
   return asUser(session.user_id, async () => {
+    const target = await one<{ device_id: string }>(`select device_id from vault_devices where id = $1 and status <> 'revoked' for update`, [targetId]);
+    if (!target) throw new UserFacingError('not_found', 'Device not found.', 404);
+    // A browser may always withdraw its own access or request. Removing any
+    // other browser takes one that already has access: otherwise a pending
+    // (unapproved) browser could lock every approved one out.
+    if (target.device_id !== session.device_id) await requireActiveVaultDevice(session);
     const row = await one<{ device_id: string }>(
-      `update vault_devices set status = 'revoked', envelope = null, revoked_at = now() where id = $1 and status <> 'revoked' returning device_id`,
+      `update vault_devices set status = 'revoked', envelope = null, next_envelope = null, revoked_at = now() where id = $1 returning device_id`,
       [targetId],
     );
-    if (!row) throw new UserFacingError('not_found', 'Device not found.', 404);
     await recordEvent(
-      { type: 'cloud.device_revoked', userId: session.user_id, deviceId: session.device_id, sessionId: session.id, detail: { revokedDevice: row.device_id } },
+      { type: 'cloud.device_revoked', userId: session.user_id, deviceId: session.device_id, sessionId: session.id, detail: { revokedDevice: row!.device_id } },
       ctx,
     );
     return { ok: true };

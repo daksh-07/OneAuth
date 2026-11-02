@@ -25,10 +25,30 @@ export async function usageFor(userId: string): Promise<Usage> {
  * concurrent uploads are serialised and can never jointly exceed the quota.
  * Must run inside the user's tenant transaction.
  */
+/** Uploads untouched for this long are abandoned: their rows, parts and reservations are released. */
+export const STALE_UPLOAD_HOURS = 24;
+/** At most this many unfinished uploads per account. */
+export const MAX_OPEN_UPLOADS = 20;
+
 export async function reserve(userId: string, bytes: number): Promise<void> {
   await query(`insert into storage_usage (user_id) values ($1) on conflict (user_id) do nothing`, [userId]);
+  await one(`select 1 from storage_usage where user_id = $1 for update`, [userId]);
+  // Release abandoned uploads first (closed tab, lost connection), under the
+  // same lock, so a stale reservation can't block the account indefinitely.
+  const stale = await one<{ n: string; bytes: string }>(
+    `with gone as (delete from cloud_files where status = 'uploading' and updated_at < now() - make_interval(hours => $1) returning size_bytes)
+     select count(*) as n, coalesce(sum(size_bytes), 0) as bytes from gone`,
+    [STALE_UPLOAD_HOURS],
+  );
+  if (Number(stale!.bytes) > 0) {
+    await query(`update storage_usage set reserved_bytes = greatest(reserved_bytes - $2, 0) where user_id = $1`, [userId, Number(stale!.bytes)]);
+  }
+  const open = await one<{ n: string }>(`select count(*) as n from cloud_files where status = 'uploading'`);
+  if (Number(open!.n) >= MAX_OPEN_UPLOADS) {
+    throw new UserFacingError('too_many_uploads', 'Too many uploads are in progress. Let some finish, then try again.', 429);
+  }
   const row = await one<{ used: string; reserved: string }>(
-    `select used_bytes as used, reserved_bytes as reserved from storage_usage where user_id = $1 for update`,
+    `select used_bytes as used, reserved_bytes as reserved from storage_usage where user_id = $1`,
     [userId],
   );
   const { quota } = await usageFor(userId);
