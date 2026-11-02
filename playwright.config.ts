@@ -30,6 +30,6 @@ export default defineConfig({
     url: 'http://localhost:3000/how-it-works',
     reuseExistingServer: false,
     timeout: 60_000,
-    env: { DATABASE_URL: E2E_DATABASE_URL, ONEAUTH_RUNTIME_DATABASE_URL: runtimeUrl.toString(), ONEAUTH_ORIGINS: 'http://localhost:3000' },
+    env: { DATABASE_URL: E2E_DATABASE_URL, ONEAUTH_RUNTIME_DATABASE_URL: runtimeUrl.toString(), ONEAUTH_ORIGINS: 'http://localhost:3000', ONEAUTH_CLOUD_PREVIEW: '1' },
   },
 });

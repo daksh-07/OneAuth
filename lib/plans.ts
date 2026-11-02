@@ -9,6 +9,8 @@ export interface Plan {
   status: 'available' | 'planned';
   identity: { maxTrustedDevices: number | null; temporarySessions: boolean };
   storageBytes: number;
+  /** OneAuth Cloud entitlement in bytes (ciphertext). Independent of identity features. */
+  cloudBytes: number;
   /** Proposed monthly price in minor units; null = free or custom. */
   proposedPrice: { amount: number; currency: string } | null;
 }
@@ -22,6 +24,7 @@ export const PLANS: Plan[] = [
     status: 'available',
     identity: { maxTrustedDevices: null, temporarySessions: true },
     storageBytes: 0, // OneAuth Cloud is not launched; no storage is allocated yet.
+    cloudBytes: 100 * 1024 * 1024, // developer-preview allowance
     proposedPrice: null,
   },
   {
@@ -30,6 +33,7 @@ export const PLANS: Plan[] = [
     status: 'planned',
     identity: { maxTrustedDevices: null, temporarySessions: true },
     storageBytes: 100 * GB,
+    cloudBytes: 100 * GB,
     proposedPrice: { amount: 899, currency: 'AUD' },
   },
   {
@@ -38,6 +42,7 @@ export const PLANS: Plan[] = [
     status: 'planned',
     identity: { maxTrustedDevices: null, temporarySessions: true },
     storageBytes: 0,
+    cloudBytes: 0,
     proposedPrice: null,
   },
 ];

@@ -18,6 +18,14 @@ export async function addVirtualAuthenticator(page: Page) {
   return { cdp, authenticatorId };
 }
 
+/** Copies the passkeys from one virtual authenticator to a new one on another page (the same user on a second browser). */
+export async function clonePasskeys(from: Awaited<ReturnType<typeof addVirtualAuthenticator>>, to: Page) {
+  const target = await addVirtualAuthenticator(to);
+  const { credentials } = await from.cdp.send('WebAuthn.getCredentials', { authenticatorId: from.authenticatorId });
+  for (const credential of credentials) await target.cdp.send('WebAuthn.addCredential', { authenticatorId: target.authenticatorId, credential });
+  return target;
+}
+
 export function collectConsoleErrors(page: Page) {
   const errors: string[] = [];
   page.on('console', (m) => {

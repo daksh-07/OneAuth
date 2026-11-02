@@ -11,7 +11,9 @@ const admin = await import('./admin');
 beforeEach(async () => {
   await admin.query(
     `truncate users, user_profiles, authenticators, devices, sessions, device_pairing_requests, device_grants,
-              webauthn_challenges, security_events, rate_limits, subscriptions restart identity cascade`,
+              webauthn_challenges, security_events, rate_limits, subscriptions,
+              vaults, vault_devices, cloud_folders, cloud_files, cloud_object_parts, storage_usage,
+              spaces, space_devices, space_pins, space_selection restart identity cascade`,
   );
 });
 

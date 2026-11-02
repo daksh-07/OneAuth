@@ -5,6 +5,9 @@ import { PageHeader, Panel, PanelHeader } from '@/components/ui/panel';
 import { requirePageSession } from '@/lib/server/auth';
 import { getAccount } from '@/lib/server/account';
 import { planById, PLANS, STORAGE_ADDON } from '@/lib/plans';
+import { cloudEnabled } from '@/lib/server/cloud/access';
+import { CloudApp } from '@/components/cloud/cloud-app';
+import { NoAccess } from '@/components/app/no-access';
 
 export const metadata: Metadata = { title: 'Cloud' };
 
@@ -18,8 +21,24 @@ function formatPrice(p: { amount: number; currency: string } | null) {
   return `${new Intl.NumberFormat('en-AU', { style: 'currency', currency: p.currency }).format(p.amount / 100)}/mo`;
 }
 
-export default async function CloudPage() {
+export default async function CloudPage({ searchParams }: { searchParams: Promise<{ folder?: string }> }) {
   const session = await requirePageSession();
+  if (cloudEnabled()) {
+    if (session.kind !== 'primary' || session.device_kind !== 'owned') {
+      return (
+        <>
+          <PageHeader title="Cloud" description="Encrypted personal storage, available on the devices you choose." />
+          <NoAccess what="encrypted files" />
+        </>
+      );
+    }
+    return (
+      <>
+        <PageHeader title="Cloud" description="Encrypted in your browser before upload. OneAuth stores only encrypted data." />
+        <CloudApp userId={session.user_id} initialFolder={/^[0-9a-f-]{36}$/i.test((await searchParams).folder ?? '') ? (await searchParams).folder! : null} />
+      </>
+    );
+  }
   const account = await getAccount(session.user_id);
   const plan = planById(account?.plan_id ?? 'free');
 
