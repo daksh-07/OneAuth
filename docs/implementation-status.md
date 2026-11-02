@@ -42,7 +42,7 @@ _Last updated: 2 November 2026._
 | Quota (reserve, settle, release; race-safe) | Implemented and verified | Concurrency test; the client is never trusted for byte counts. |
 | Upload state (uploading/ready, integrity check, cancel releases quota) | Implemented and verified | Integration tests for hash mismatch, wrong part size and over-declaration. |
 | Cloud UI (setup, recovery key, approval with fingerprint, file browser, trash, favourites, storage meter, vault access) | Implemented and verified locally | E2E on desktop Chromium; visual, overflow and touch-target checks at mobile and desktop sizes. |
-| **End-to-end encrypted transfer between two authorised browsers** | Implemented and verified locally (behind the preview flag) | E2E: browser A encrypts a 1.6 MB file; B is approved after the codes are compared; B downloads it and the bytes match; the database holds no plaintext; removing access is enforced. Runs only under `ONEAUTH_CLOUD_PREVIEW=1`, never on Vercel production. |
+| **End-to-end encrypted transfer between two authorised browsers** | Implemented and verified locally **and on the hosted Vercel + Neon preview** (behind the preview flag) | E2E: browser A encrypts a 1.6 MB file; B is approved after the codes are compared; B downloads it and the bytes match; the database holds no plaintext; removing access is enforced. Runs only under `ONEAUTH_CLOUD_PREVIEW=1`, never on Vercel production. |
 | Vault-key rotation after revocation | **Designed only** | A revoked browser keeps anything it already downloaded. |
 | Padmé size padding, client-side malware scanning | **Not started** | |
 
@@ -70,7 +70,8 @@ _Last updated: 2 November 2026._
 - Vitest: 172 tests (unit and PostgreSQL integration, running as the least-privilege role).
 - Playwright: 46 tests across desktop Chromium, iPhone WebKit, Android Chromium, Firefox and desktop WebKit, including axe accessibility, light and dark themes, no horizontal overflow, and touch targets.
 - `next build`: succeeds.
-- Hosted preview: see the PR for the current result.
+- Hosted preview (`oneauth-git-claude-oneauth-cloud-foundation-…vercel.app`, commit `b064d44`): health `ok` / schema `current` / `least_privilege`. Hosted Playwright **8/8**, including `tests/hosted/cloud.spec.ts`: a two-browser encrypted transfer with byte-identical download, against real Vercel functions and the Neon preview database. Throwaway accounts were deleted.
+- PR #1's preview stays healthy on the shared preview database after migrations `0004` and `0005`.
 
 ## Security concerns still open
 
