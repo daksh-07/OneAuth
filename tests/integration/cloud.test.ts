@@ -359,7 +359,23 @@ describe('folders, trash and favourites', () => {
     await items.updateFile(s, fileId, { trashed: false, folderId: null }, ctx());
     expect((await items.listItems(s, { folderId: null, view: 'folder' })).files).toHaveLength(1);
 
+    // Files inside a trashed folder disappear from Recent and Favourites, and come back with it.
+    await items.updateFile(s, fileId, { folderId: deep }, ctx());
+    await items.updateFolder(s, sub, { trashed: true });
+    expect((await items.listItems(s, { folderId: null, view: 'recent' })).files).toHaveLength(0);
+    expect((await items.listItems(s, { folderId: null, view: 'favorites' })).files).toHaveLength(0);
+    await items.updateFolder(s, sub, { trashed: false });
+    expect((await items.listItems(s, { folderId: null, view: 'recent' })).files).toHaveLength(1);
+    // Restoring a file whose folder is in the trash puts it at the top level.
+    await items.updateFile(s, fileId, { trashed: true }, ctx());
+    await items.updateFolder(s, deep, { trashed: true });
+    await items.updateFile(s, fileId, { trashed: false }, ctx());
+    expect((await items.listItems(s, { folderId: null, view: 'folder' })).files.map((f) => f.id)).toContain(fileId);
+    await items.updateFolder(s, deep, { trashed: false });
+    await items.updateFile(s, fileId, { folderId: sub }, ctx());
+
     await expect(items.deleteFolder(s, sub)).rejects.toMatchObject({ code: 'not_empty' });
+    await items.updateFile(s, fileId, { folderId: null }, ctx());
     await items.deleteFolder(s, deep);
     await items.deleteFolder(s, sub);
     // Uploading into a trashed folder is refused.

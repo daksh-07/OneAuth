@@ -90,10 +90,15 @@ export async function listItems(session: SessionRecord, input: { folderId: strin
       }
     } else if (input.view === 'recent') {
       files = await query<FileRow>(
-        `select id, folder_id, size_bytes, part_count, encrypted_meta, wrapped_key, favorite, created_at, updated_at, trashed_at from cloud_files where status = 'ready' and trashed_at is null order by updated_at desc limit 50`,
+        `with recursive hidden as (select id from cloud_folders where trashed_at is not null union select f.id from cloud_folders f join hidden h on f.parent_id = h.id)
+         select id, folder_id, size_bytes, part_count, encrypted_meta, wrapped_key, favorite, created_at, updated_at, trashed_at from cloud_files
+          where status = 'ready' and trashed_at is null and (folder_id is null or folder_id not in (select id from hidden))
+          order by updated_at desc limit 50`,
       );
     } else if (input.view === 'favorites') {
-      files = await query<FileRow>(`select id, folder_id, size_bytes, part_count, encrypted_meta, wrapped_key, favorite, created_at, updated_at, trashed_at from cloud_files where status = 'ready' and trashed_at is null and favorite`);
+      files = await query<FileRow>(`with recursive hidden as (select id from cloud_folders where trashed_at is not null union select f.id from cloud_folders f join hidden h on f.parent_id = h.id)
+         select id, folder_id, size_bytes, part_count, encrypted_meta, wrapped_key, favorite, created_at, updated_at, trashed_at from cloud_files
+          where status = 'ready' and trashed_at is null and favorite and (folder_id is null or folder_id not in (select id from hidden))`);
     } else if (input.view === 'trash') {
       folders = await query<FolderRow>(`select id, parent_id, encrypted_name, updated_at, trashed_at from cloud_folders where trashed_at is not null`);
       files = await query<FileRow>(`select id, folder_id, size_bytes, part_count, encrypted_meta, wrapped_key, favorite, created_at, updated_at, trashed_at from cloud_files where status = 'ready' and trashed_at is not null`);
@@ -240,6 +245,13 @@ export async function updateFile(
     if (typeof input.favorite === 'boolean') await query(`update cloud_files set favorite = $2 where id = $1`, [fileId, input.favorite]);
     if (typeof input.trashed === 'boolean') {
       await query(`update cloud_files set trashed_at = case when $2 then now() end where id = $1`, [fileId, input.trashed]);
+      // Restoring into a folder that is itself in the trash would hide it: restore to the top level instead.
+      if (!input.trashed) {
+        await query(
+          `update cloud_files set folder_id = null where id = $1 and folder_id in (select id from cloud_folders where trashed_at is not null)`,
+          [fileId],
+        );
+      }
       if (input.trashed) await recordEvent({ type: 'cloud.file_trashed', userId: session.user_id, deviceId: session.device_id, sessionId: session.id }, ctx);
     }
     return { ok: true };
@@ -313,6 +325,12 @@ export async function updateFolder(
     }
     if (typeof input.trashed === 'boolean') {
       await query(`update cloud_folders set trashed_at = case when $2 then now() end where id = $1`, [id, input.trashed]);
+      if (!input.trashed) {
+        await query(
+          `update cloud_folders set parent_id = null where id = $1 and parent_id in (select id from cloud_folders where trashed_at is not null)`,
+          [id],
+        );
+      }
     }
     return { ok: true };
   });
