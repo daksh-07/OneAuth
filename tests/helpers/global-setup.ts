@@ -20,7 +20,7 @@ export default async function setup() {
     MIGRATION_DATABASE_URL: TEST_OWNER_URL,
     ONEAUTH_RUNTIME_DATABASE_URL: appUrl(TEST_OWNER_URL),
   };
-  delete verifyEnv.DATABASE_URL;
-  delete verifyEnv.ONEAUTH_DB_APP_PASSWORD;
+  Reflect.deleteProperty(verifyEnv, 'DATABASE_URL');
+  Reflect.deleteProperty(verifyEnv, 'ONEAUTH_DB_APP_PASSWORD');
   execFileSync('node', ['scripts/db-verify.mjs'], { env: verifyEnv, stdio: 'inherit' });
 }
