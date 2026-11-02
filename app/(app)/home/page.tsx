@@ -9,7 +9,7 @@ import { RelativeTime } from '@/components/ui/time';
 import { DeviceIcon } from '@/components/app/device-icon';
 import { ActivityList } from '@/components/app/activity-list';
 import { requirePageSession } from '@/lib/server/auth';
-import { listDevices } from '@/lib/server/devices';
+import { listDevices, recentlyPaired } from '@/lib/server/devices';
 import { listEvents } from '@/lib/server/events';
 import { listPasskeys } from '@/lib/server/account';
 import { listActiveSessions } from '@/lib/server/sessions';
@@ -34,6 +34,7 @@ export default async function HomePage() {
   const firstName = session.display_name.split(/\s+/)[0];
   const connectUrl = `${(canonicalOrigin() ?? '').replace(/^https?:\/\//, '')}/connect`;
   const temporary = devices?.filter((d) => d.kind === 'shared').length ?? 0;
+  const newlyPaired = devices ? recentlyPaired(devices, session.device_id) : [];
 
   return (
     <div className="space-y-6">
@@ -49,6 +50,22 @@ export default async function HomePage() {
           </ButtonLink>
         ) : null}
       </div>
+
+      {newlyPaired.map((d) => (
+        <Notice
+          key={d.id}
+          tone="info"
+          title={`New device connected: ${d.name}`}
+          action={
+            <ButtonLink href={`/devices/${d.id}`} size="sm" variant="secondary">
+              Review or disconnect
+            </ButtonLink>
+          }
+        >
+          Connected <RelativeTime value={d.created_at} /> with {d.kind === 'owned' ? 'ongoing' : 'temporary'} access. If you didn’t approve
+          this, disconnect it now. It loses access immediately.
+        </Notice>
+      ))}
 
       {passkeys && passkeys.length === 1 ? (
         <Notice

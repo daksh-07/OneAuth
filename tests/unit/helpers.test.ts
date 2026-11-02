@@ -59,3 +59,29 @@ describe('scope model', () => {
     expect(hasScope(ALL_SCOPES, 'security:manage')).toBe(true);
   });
 });
+
+describe('device names can’t be spoofed through the User-Agent', () => {
+  it.each([
+    'Mozilla/5.0 (iPhone) Safari/604.1 — Daksh’s verified iPhone (approved by OneAuth support)',
+    '<script>alert(1)</script> Chrome/130.0 Windows',
+    '‮enohPi s’nodnerB‬ Chrome/130 Android',
+  ])('%s', (ua) => {
+    const { name } = describeUserAgent(ua);
+    expect(name).toMatch(/^(Browser|Chrome|Edge|Firefox|Safari) on (iPhone|iPad|Android|Mac|Windows PC|Linux|Chromebook|Device)$/);
+  });
+});
+
+describe('recentlyPaired', async () => {
+  const { recentlyPaired } = await import('@/lib/server/devices');
+  const now = Date.parse('2026-10-31T00:00:00Z');
+  const base = { platform: 'macos', kind: 'owned', last_seen_at: new Date(now), active_sessions: 1, access_expires_at: null, scopes: null } as const;
+  it('includes only devices paired in the last 24 hours, excluding this one', () => {
+    const rows = [
+      { ...base, id: 'a', name: 'A', enrolled_via: 'pairing', created_at: new Date(now - 3600_000) },
+      { ...base, id: 'b', name: 'B', enrolled_via: 'pairing', created_at: new Date(now - 30 * 3600_000) },
+      { ...base, id: 'c', name: 'C', enrolled_via: 'passkey', created_at: new Date(now - 3600_000) },
+      { ...base, id: 'd', name: 'D', enrolled_via: 'pairing', created_at: new Date(now - 60_000) },
+    ];
+    expect(recentlyPaired(rows as never, 'd', now).map((r) => r.id)).toEqual(['a']);
+  });
+});

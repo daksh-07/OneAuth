@@ -11,9 +11,9 @@ export async function currentDeviceKey(): Promise<string | null> {
  * HttpOnly cookies. Any session this browser already held is revoked, so a
  * replaced cookie never leaves a live session behind.
  */
-export async function persistSession(s: { token: string; expiresAt: Date; deviceKey: string }) {
+export async function persistSession(s: { token: string; expiresAt: Date; deviceKey: string; shared: boolean }) {
   const previous = await readCookie(COOKIE.session);
   if (previous && previous !== s.token) await revokeSessionByToken(previous, 'replaced');
-  await setSessionCookie(s.token, s.expiresAt);
-  await setDeviceCookie(s.deviceKey);
+  await setSessionCookie(s.token, s.expiresAt, !s.shared);
+  await setDeviceCookie(s.deviceKey, !s.shared);
 }

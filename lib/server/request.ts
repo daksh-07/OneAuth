@@ -23,12 +23,16 @@ export async function requestContext(): Promise<RequestContext> {
 
 const base = { httpOnly: true, secure: isProduction, sameSite: 'lax' as const, path: '/' };
 
-export async function setSessionCookie(token: string, expiresAt: Date) {
-  (await cookies()).set(COOKIE.session, token, { ...base, expires: expiresAt });
+/**
+ * On shared computers both cookies are browser-session cookies (no Expires),
+ * so closing the browser drops them; the server-side expiry applies either way.
+ */
+export async function setSessionCookie(token: string, expiresAt: Date, persistent = true) {
+  (await cookies()).set(COOKIE.session, token, persistent ? { ...base, expires: expiresAt } : base);
 }
 
-export async function setDeviceCookie(deviceKey: string) {
-  (await cookies()).set(COOKIE.device, deviceKey, { ...base, maxAge: 400 * 24 * 60 * 60 });
+export async function setDeviceCookie(deviceKey: string, persistent = true) {
+  (await cookies()).set(COOKIE.device, deviceKey, persistent ? { ...base, maxAge: 400 * 24 * 60 * 60 } : base);
 }
 
 export async function clearCookie(name: string) {

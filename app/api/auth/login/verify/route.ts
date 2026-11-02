@@ -15,6 +15,6 @@ export const POST = jsonRoute(async (req, origin) => {
     },
     await requestContext(),
   );
-  await persistSession(result);
+  await persistSession({ ...result, shared: body.shared === true });
   return { ok: true };
 });

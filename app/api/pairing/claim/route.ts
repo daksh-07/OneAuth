@@ -8,7 +8,7 @@ export const POST = jsonRoute(async () => {
   const secret = await readCookie(COOKIE.pairing);
   if (!secret) throw new UserFacingError('not_claimable', 'This connection request is no longer valid.', 409);
   const result = await claimPairing(secret, await currentDeviceKey(), await requestContext());
-  await persistSession(result);
+  await persistSession({ ...result, shared: result.kind === 'shared' });
   await clearCookie(COOKIE.pairing);
   // Shown on the requesting screen so the user can spot being joined to someone else's account.
   return { ok: true, displayName: result.displayName, kind: result.kind };

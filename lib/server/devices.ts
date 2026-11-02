@@ -119,3 +119,10 @@ export async function renameDevice(userId: string, deviceId: string, name: strin
     return rows.length === 1;
   });
 }
+
+/** Devices connected by pairing in the last 24 hours (excluding this one): surfaced so an unexpected approval is noticed quickly. */
+export function recentlyPaired(devices: DeviceRow[], currentDeviceId: string, now = Date.now()): DeviceRow[] {
+  return devices.filter(
+    (d) => d.enrolled_via === 'pairing' && d.id !== currentDeviceId && now - new Date(d.created_at).getTime() < 24 * 60 * 60 * 1000,
+  );
+}
