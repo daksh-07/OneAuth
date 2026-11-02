@@ -14,6 +14,16 @@ if (env === 'production' && hasDb && process.env.ONEAUTH_DATABASE_ENV !== 'produ
   );
   process.exit(1);
 }
+if (env === 'production' && hasDb && !process.env.ONEAUTH_RUNTIME_DATABASE_URL &&
+    !process.env.ONEAUTH_DB_APP_PASSWORD && process.env.ONEAUTH_DB_APP_ROLE !== 'derived') {
+  console.error('[oneauth] Refusing production build: restricted runtime database credentials are missing.');
+  process.exit(1);
+}
+if (env === 'production' && process.env.ONEAUTH_RUNTIME_DATABASE_URL &&
+    decodeURIComponent(new URL(process.env.ONEAUTH_RUNTIME_DATABASE_URL).username) !== 'oneauth_app') {
+  console.error('[oneauth] Refusing production build: runtime connection must use oneauth_app.');
+  process.exit(1);
+}
 
 if (env === 'preview' && hasDb && process.env.ONEAUTH_SKIP_MIGRATIONS !== '1') {
   console.log('[oneauth] Preview deployment: applying database migrations');

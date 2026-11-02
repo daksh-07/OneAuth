@@ -80,3 +80,24 @@ describe('derived app-role password', () => {
     }
   });
 });
+
+describe('hosted runtime connection', () => {
+  it('fails closed without an app credential and refuses an owner URL', async () => {
+    const { runtimeDatabaseUrl } = await import('@/lib/server/env');
+    const saved = { ...process.env };
+    try {
+      process.env.VERCEL = '1';
+      process.env.DATABASE_URL = 'postgres://owner:secret@db.example/x';
+      delete process.env.ONEAUTH_DB_APP_PASSWORD;
+      delete process.env.ONEAUTH_DB_APP_ROLE;
+      delete process.env.ONEAUTH_RUNTIME_DATABASE_URL;
+      expect(runtimeDatabaseUrl()).toBeUndefined();
+      process.env.ONEAUTH_RUNTIME_DATABASE_URL = process.env.DATABASE_URL;
+      expect(runtimeDatabaseUrl()).toBeUndefined();
+      process.env.ONEAUTH_RUNTIME_DATABASE_URL = 'postgres://oneauth_app:secret@db.example/x';
+      expect(runtimeDatabaseUrl()).toBe(process.env.ONEAUTH_RUNTIME_DATABASE_URL);
+    } finally {
+      process.env = saved;
+    }
+  });
+});

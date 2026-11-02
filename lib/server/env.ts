@@ -20,13 +20,17 @@ export const APP_DB_ROLE = 'oneauth_app';
  * - ONEAUTH_RUNTIME_DATABASE_URL, if set, is used as-is (local/CI);
  * - otherwise, with ONEAUTH_DB_APP_PASSWORD, DATABASE_URL's host and database
  *   are reused with the app role's credentials (works with Neon branches);
- * - otherwise DATABASE_URL (owner). /api/health reports which is in use.
+ * - hosted deployments fail closed if neither restricted connection is set.
  */
 export function runtimeDatabaseUrl(): string | undefined {
-  if (process.env.ONEAUTH_RUNTIME_DATABASE_URL) return process.env.ONEAUTH_RUNTIME_DATABASE_URL;
+  if (process.env.ONEAUTH_RUNTIME_DATABASE_URL) {
+    const url = process.env.ONEAUTH_RUNTIME_DATABASE_URL;
+    if (process.env.VERCEL && decodeURIComponent(new URL(url).username) !== APP_DB_ROLE) return undefined;
+    return url;
+  }
   const base = databaseUrl();
   const password = appRolePassword(base);
-  if (!base || !password) return base;
+  if (!base || !password) return process.env.VERCEL ? undefined : base;
   const url = new URL(base);
   url.username = APP_DB_ROLE;
   url.password = password;
