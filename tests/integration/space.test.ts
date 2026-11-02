@@ -110,3 +110,87 @@ describe('spaces', () => {
     await expect(space.listSpaces(await kiosk.session())).rejects.toMatchObject({ code: 'forbidden' });
   });
 });
+
+describe('encrypted Space items', () => {
+  it('stores bookmarks end-to-end encrypted and shows them only to browsers with vault access', async () => {
+    const { createUser: mk } = await import('../helpers/fixtures');
+    const { secondBrowser } = await import('../helpers/cloud');
+    const v = await import('@/lib/vault/crypto');
+    const user = await mk();
+    const { a, vk, vaultId } = await setUpVault(user);
+    const sid = (await space.listSpaces(await a.session())).spaces[0].id;
+    const sk = await v.deriveSpaceKey(vk, vaultId);
+    const itemId = randomUUID();
+    const body = { title: 'Team wiki', url: 'https://wiki.example.com/start' };
+    await space.createSpaceItem(await a.session(), sid, { id: itemId, kind: 'bookmark', encryptedBody: await v.sealJson(sk, 'space-item', itemId, body), keyVersion: 1 });
+
+    // Nothing readable is stored.
+    const [row] = await query<{ encrypted_body: string }>(`select encrypted_body from space_items where id = $1`, [itemId]);
+    expect(row.encrypted_body).not.toContain('wiki');
+    const listed = await space.listSpaceItems(await a.session(), sid);
+    expect(await v.openJson(sk, 'space-item', itemId, listed.items[0].encrypted_body)).toEqual(body);
+
+    // A signed-in browser without vault access gets a count, not the items, and can't write.
+    const b = await secondBrowser(user);
+    expect(await space.listSpaceItems(await b.session(), sid)).toMatchObject({ items: [], locked: true, lockedCount: 1 });
+    await expect(
+      space.createSpaceItem(await b.session(), sid, { id: randomUUID(), kind: 'bookmark', encryptedBody: 'A'.repeat(40), keyVersion: 1 }),
+    ).rejects.toMatchObject({ code: 'vault_locked' });
+    await expect(space.deleteSpaceItem(await b.session(), sid, itemId)).rejects.toMatchObject({ code: 'vault_locked' });
+  });
+
+  it('refuses a stale edit from another browser instead of overwriting it', async () => {
+    const { createUser: mk } = await import('../helpers/fixtures');
+    const v = await import('@/lib/vault/crypto');
+    const user = await mk();
+    const { a, vk, vaultId } = await setUpVault(user);
+    const sid = (await space.listSpaces(await a.session())).spaces[0].id;
+    const sk = await v.deriveSpaceKey(vk, vaultId);
+    const id = randomUUID();
+    const seal = (title: string) => v.sealJson(sk, 'space-item', id, { label: title, url: 'https://example.com' });
+    await space.createSpaceItem(await a.session(), sid, { id, kind: 'shortcut', encryptedBody: await seal('One'), keyVersion: 1 });
+    // Two browsers both loaded version 1; the first save wins, the second is told to reload.
+    await space.updateSpaceItem(await a.session(), sid, id, { encryptedBody: await seal('Two'), version: 1, keyVersion: 1 });
+    await expect(space.updateSpaceItem(await a.session(), sid, id, { encryptedBody: await seal('Three'), version: 1, keyVersion: 1 })).rejects.toMatchObject({
+      code: 'conflict',
+    });
+    const latest = (await space.listSpaceItems(await a.session(), sid)).items[0];
+    expect(latest.version).toBe(2);
+    expect(await v.openJson(sk, 'space-item', id, latest.encrypted_body)).toMatchObject({ label: 'Two' });
+    // Stale key version is refused too.
+    await expect(space.updateSpaceItem(await a.session(), sid, id, { encryptedBody: await seal('Four'), version: 2, keyVersion: 7 })).rejects.toMatchObject({
+      code: 'stale_key',
+    });
+  });
+
+  it('isolates items between accounts and respects device-restricted spaces', async () => {
+    const { createUser: mk } = await import('../helpers/fixtures');
+    const v = await import('@/lib/vault/crypto');
+    const alice = await mk('Alice');
+    const bob = await mk('Bob');
+    const A = await setUpVault(alice);
+    const B = await setUpVault(bob);
+    const aliceSpace = (await space.listSpaces(await A.a.session())).spaces[0].id;
+    const id = randomUUID();
+    await space.createSpaceItem(await A.a.session(), aliceSpace, {
+      id,
+      kind: 'bookmark',
+      encryptedBody: await v.sealJson(await v.deriveSpaceKey(A.vk, A.vaultId), 'space-item', id, { title: 'x', url: 'https://x.example' }),
+      keyVersion: 1,
+    });
+    await expect(space.listSpaceItems(await B.a.session(), aliceSpace)).rejects.toMatchObject({ code: 'not_found' });
+    await expect(space.updateSpaceItem(await B.a.session(), aliceSpace, id, { position: 3, version: 1 })).rejects.toMatchObject({ code: 'not_found' });
+    await expect(space.deleteSpaceItem(await B.a.session(), aliceSpace, id)).rejects.toMatchObject({ code: 'not_found' });
+    expect(await query(`select 1 from space_items where id = $1`, [id])).toHaveLength(1);
+  });
+
+  it('validates preferences', async () => {
+    const { createUser: mk } = await import('../helpers/fixtures');
+    const user = await mk();
+    const s = await user.session();
+    const sid = (await space.listSpaces(s)).spaces[0].id;
+    await space.updateSpace(s, sid, { prefs: { cloudSort: 'updated', linksInNewTab: true, injected: 'x' } });
+    expect((await space.listSpaces(s)).spaces[0].prefs).toEqual({ cloudSort: 'updated', linksInNewTab: true });
+    await expect(space.updateSpace(s, sid, { prefs: { cloudSort: 'drop table' } })).rejects.toMatchObject({ code: 'invalid' });
+  });
+});
