@@ -144,3 +144,20 @@ The implementation was reviewed against this design by the same team that wrote 
 **Client trust assumptions (unchanged):** the browser runs whatever JavaScript the server sends. A malicious or compromised deployment can exfiltrate keys. This is the main reason Cloud stays preview-only.
 
 **Sign-out:** signing out ends the session but deliberately keeps this browser's device key, so the same owned browser doesn't need re-approval. "Remove this browser" withdraws vault access and deletes the key. Whether sign-out on an owned device should offer this by default is a review item.
+
+## 13. Phase 2C self-review (not an independent audit)
+
+The full inventory of what is and isn't enforced is in [`guarantees.md`](guarantees.md).
+
+| # | Finding | Severity | Fix |
+| --- | --- | --- | --- |
+| R1 | Resuming an interrupted rotation trusted an anonymous envelope. A server with database write access could plant a rotation and have a browser re-wrap **every file key** under a key the server chose | **Critical** (preview only; no real data) | Transition proof under the outgoing key, verified before any re-wrapping |
+| G1 | Browsers accepted whatever key version the server sent (rollback) | High | Version in the authenticated JWE header; per-browser pins (highest version, commitment per version) |
+| G5 | Newly approved browsers couldn't tell whether their envelope came from the approver (key injection) | High | Two-screen confirmation code from the key actually received; read-only until confirmed |
+| G2 | Rotation left existing contents under the old file keys | Medium | Deep rotation (rollback-safe swap) |
+| G3 | Every rotation forced a new recovery key | UX/safety | Option to keep it by re-entering it, refused when a removed browser used it |
+| G4 | Space kept a stale key after a rotation elsewhere | Low | Re-checked every sync tick |
+| L1 | Lock order differed between moves, uploads into folders and the re-encryption swap (possible deadlocks) | Low | One order everywhere: tree, then usage, then rows |
+| U1 | After re-encryption the file list kept the old IDs (downloads 404) | Low (UX) | Listing reloads when files are replaced |
+
+An asymmetric "stable" recovery key was evaluated and rejected because its envelopes would be forgeable by the server (`key-rotation.md` §8).

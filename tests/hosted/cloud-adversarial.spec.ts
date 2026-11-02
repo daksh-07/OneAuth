@@ -130,7 +130,8 @@ test('Cloud preview resists misuse through its public interface', async ({ brows
     expect((await b.request.get(`/api/cloud/files/${fileId}/parts/0`)).status()).toBe(403);
     await a.goto('/devices');
     await a.getByRole('link', { name: /Android/ }).first().click();
-    await a.getByRole('button', { name: 'Disconnect' }).click();
+    await a.waitForURL(/\/devices\/[0-9a-f-]{36}$/);
+    await a.getByRole('button', { name: 'Disconnect', exact: true }).click();
     await a.getByRole('button', { name: 'Disconnect device' }).click();
     await a.waitForURL('**/devices');
     for (const path of ['/api/cloud/vault', '/api/cloud/items?view=recent', '/api/space']) expect((await b.request.get(path)).status(), path).toBe(401);

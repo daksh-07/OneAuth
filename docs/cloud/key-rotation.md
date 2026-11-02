@@ -1,9 +1,14 @@
-# Vault-key rotation (design v1, developer preview)
+# Vault-key rotation (design v2, developer preview)
 
 **Status:**
 - **Design:** written, **not independently reviewed**.
-- **Implemented behind `ONEAUTH_CLOUD_PREVIEW=1`, for test data only:** the staged protocol below (start → re-wrap in batches → commit or abort), the write guards and the tests.
-- **Not implemented:** content re-encryption ("deep rotation", §7) and automatic rotation.
+- **Implemented behind `ONEAUTH_CLOUD_PREVIEW=1`, for test data only:**
+  - the staged protocol (§3);
+  - client-side key trust (§3a, Phase 2C);
+  - keeping the recovery key by re-entering it (§2);
+  - deep rotation (§7, Phase 2C);
+  - the tests in §6.
+- **Not implemented:** automatic rotation, and an asymmetric recovery key (evaluated and rejected, §8).
 
 ## 1. What rotation does, and what it can't
 
@@ -31,7 +36,11 @@ The UI says this in plain language and never describes rotation as "making the d
 | Space items | `encrypted_body` under SK₁ = HKDF(VK₁) | `next_encrypted_body` under SK₂ | swapped; `key_version` = 2 |
 | `vaults.key_version` | 1 | 1 (the authoritative version doesn't change until commit) | 2 |
 
-**Why a new recovery key every time.** The rotating browser doesn't know RK₁, so it can't wrap VK₂ under it. A design where any device can wrap to a *recovery public key* (an X25519 pair derived from RK) was considered and deferred to review. Issuing a fresh RK is also the right answer whenever RK₁ might be exposed: we know whether a removed browser was ever unlocked with the recovery key (`approved_via = 'recovery'`).
+**Recovery key during rotation (Phase 2C).** The rotating browser doesn't know RK₁, so there are two options:
+- **Default: a new RK₂.** It's shown once and confirmed, exactly as at setup.
+- **Keep RK₁.** The user re-enters it, and the browser seals VK₂ under it with the same authenticated AES-KW construction. The server accepts this only with a proof matching the stored verifier. It **refuses** (`recovery_replacement_required`) if any browser that was unlocked with the recovery key has been removed since that key was set (`vaults.recovery_set_at`), because that browser could have kept it.
+
+A stable recovery key that needs no re-entry was evaluated and rejected (§8).
 
 ## 3. Protocol
 
@@ -49,6 +58,27 @@ The UI says this in plain language and never describes rotation as "making the d
    Batches are idempotent and safe to repeat.
 4. **Commit** `POST …/rotation/commit`. Under the vault-row lock, the server checks that nothing is missing: every file (including unfinished uploads), folder, Space item and active browser has its `next_*` value. If anything is missing it returns `409 rotation_incomplete` with counts, and the client goes back to step 3. Otherwise it swaps everything in **one transaction**, increments `key_version`, clears `next_*` and records `cloud.vault_rotated`.
 5. **Abort** `DELETE …/rotation`. Clears every `next_*` value. VK₁ and RK₁ stay authoritative, and the UI tells the user that the RK₂ they saved won't work.
+
+## 3a. Client-side trust in a new key (Phase 2C)
+
+The server is untrusted. A server with database write access could otherwise:
+- (a) replay an older envelope that a removed browser can also open (**rollback**);
+- (b) put a different key under a version a browser already knows (**substitution**);
+- (c) invent a "rotation", or a newly approved browser's envelope, carrying a key the server chose (**injection**). Device envelopes are anonymous ECDH-ES, so their contents aren't authenticated to an approver.
+
+Before PR #2's Phase 2C, (c) applied to **resuming an interrupted rotation**. A browser that pressed "Finish it" would have re-wrapped every file key under a key the server chose. The defences are below; all are in `lib/vault/trust.ts`.
+
+| Defence | Mechanism |
+| --- | --- |
+| Version binding | Device envelopes carry `oak_kv` in the JWE protected header, which the AEAD authenticates |
+| Rollback and substitution | Each browser pins, in IndexedDB, the highest version it accepted and a commitment `SHA-256("oneauth/v1/vk-commit" ‖ vaultId ‖ v ‖ VK)` per version. A lower version, or a different key under a pinned version, is refused |
+| Transition proof | The rotating browser stores `HMAC(HKDF(VK_old, "oneauth/v1/transition"), vaultId ‖ from ‖ to ‖ commit(VK_new))`. A browser that pinned `from` keeps that HMAC key (non-extractable) and verifies the step before trusting `VK_new`. A resuming browser verifies it with the current key before re-wrapping anything |
+| Confirmation code | When a browser can't verify a key itself (first approval, or a multi-step jump), it shows `code = base32(SHA-256("oneauth/v1/vk-confirm" ‖ vaultId ‖ v ‖ SHA-256(VK) ‖ thumbprint(device key)))[60 bits]`. An approved browser shows the same code for it. Until the user confirms, the browser is **read-only** (no writes under that key) |
+
+**Residual risks:**
+- A removed browser that **colludes with the server** knows VK_old and can forge the transition proof for the step it knew.
+- Clearing site data resets a browser's pins.
+- The confirmation code helps only if the user compares it.
 
 ## 4. Failure handling
 
@@ -77,13 +107,45 @@ Starting, committing and aborting need an **active** vault browser and an owned,
 - Writes refused during rotation; stale `keyVersion` refused after commit.
 - `devices_changed`, `rotation_incomplete`, concurrent starts (exactly one wins), cross-account isolation, unfinished uploads included.
 
-## 7. Deep rotation (designed only)
+## 7. Deep rotation (implemented in Phase 2C; preview only)
 
-To protect **existing** files against a removed browser that kept VK₁ and file keys, each file must be re-encrypted under a new file key: download, decrypt, re-encrypt with a new FK and file ID, upload, then atomically replace. It costs the full vault size in bandwidth and is resumable per file. It needs the S3/R2 driver (direct-to-bucket) to be practical, and it's a review item.
+Shallow rotation leaves file contents under their old file keys. Deep rotation re-encrypts each file:
 
-## 8. Review questions
+1. The browser downloads and decrypts the file.
+2. It re-encrypts it under a **new file key and a new file ID**.
+3. It uploads it with `replacesFileId`.
+4. On completion, after the server has checked size and SHA-256, **one transaction** swaps the new file in. Folder, favourite, trash state and Space pins carry over, the old ciphertext rows are deleted, and quota is settled.
 
-1. Is the "fresh RK on every rotation" policy acceptable, or should recovery move to an asymmetric (X25519) recovery key?
+**Rollback safety:**
+- The original stays authoritative and listed until the swap.
+- Interrupting at any point leaves it intact; the unfinished copy expires (24h) or is cancelled, releasing its reservation.
+- The swap is refused if the original was deleted (`replace_target_gone`) or changed (`changed_during_reencrypt`) meanwhile.
+- A unique index allows one re-encryption per file at a time.
+
+`cloud_files.content_version` records the vault-key version when the contents were encrypted, and rotation never changes it. `content_version < key_version` identifies files still at risk, which the Cloud page offers to re-encrypt.
+
+**Limits:**
+- Each file briefly needs space for a second copy within the quota.
+- Files whose stored ciphertext fails authentication can't be re-encrypted. They're reported and left in place.
+- At real vault sizes this needs direct-to-bucket storage (S3/R2, not provisioned).
+- Provider backups may keep old ciphertext until they expire.
+
+## 8. Recovery-key design evaluation (Phase 2C)
+
+**Option B, an asymmetric recovery key, was rejected.** It derives an X25519 key pair from RK and stores the public key, so any browser could wrap a new vault key to it without RK. X25519 works in the target browsers and in `jose`, but the scheme is unsafe here:
+- ECDH-ES envelopes are anonymous. A server could write a recovery envelope holding a key it chose, and the recovering user (who has only RK) couldn't tell. Today's AES-KW envelope under an RK-derived key is authenticated.
+- At rotation, the rotating browser must trust the stored public key. A server could substitute its own and receive the new vault key.
+- Authenticating either one needs a key the server lacks. Any such key that's shared through the vault key is also held by removed browsers, which are exactly the attackers rotation is for.
+
+**Chosen design:**
+- A new RK by default.
+- Or the user **re-enters** the current RK, which keeps it valid and stays authenticated. This is refused when a removed browser was unlocked with it.
+
+## 9. Review questions
+
+1. Is the recovery approach in §2 and §8 acceptable?
 2. Is blocking VK-protected writes during rotation acceptable at real vault sizes, or is dual-version writing needed?
 3. Should rotation be **required** (rather than recommended) after removing a browser that was unlocked with the recovery key?
 4. Retention: confirm that VK₁ material must not be kept after commit.
+5. §3a residual risks: is a confirmation code (user comparison) acceptable as the fallback for keys a browser can't verify itself?
+6. Deep rotation: should re-encryption be prompted automatically after a removal, and how should files that fail authentication be handled?

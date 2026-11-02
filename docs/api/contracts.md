@@ -45,7 +45,7 @@ Design: [`docs/cloud/security-design.md`](../cloud/security-design.md). All bodi
 | `GET /api/cloud/vault/recovery` | `cloud:read` | → `{vault_id, recovery_envelope}` (AES-KW ciphertext of the vault key). |
 | `POST /api/cloud/vault/recovery` | `cloud:write` + step-up, pending device | `{envelope, recoveryProof}`. `403 recovery_mismatch`. |
 | `GET /api/cloud/items?view=folder\|recent\|favorites\|trash\|all&folder=` | `cloud:read`, active device | → `{folders, files, path}` (encrypted names and metadata). |
-| `POST /api/cloud/files` | `cloud:write`, active device | `{fileId, folderId, size, sha256, encryptedMeta, wrappedKey}` → `{fileId, partSize, partCount}`. Reserves quota. `413 too_large` / `quota_exceeded`. |
+| `POST /api/cloud/files` | `cloud:write`, active device | `{fileId, folderId, size, sha256, encryptedMeta, wrappedKey, keyVersion, replacesFileId?}` → `{fileId, partSize, partCount}`. Reserves quota. `413 too_large` / `quota_exceeded`. With `replacesFileId` (deep rotation), completion swaps it in for that file atomically. Returns `409 replace_target_gone` / `changed_during_reencrypt`, or `409 conflict` if that file is already being re-encrypted. |
 | `PUT /api/cloud/files/:id/parts/:idx` | `cloud:write` | Raw bytes. Each part is exactly `partSize`, except the last. → `{stored}`. |
 | `POST /api/cloud/files/:id/complete` | `cloud:write` | Server checks byte count and SHA-256, then settles quota. `409 integrity_mismatch`. |
 | `GET /api/cloud/files/:id/parts/:idx` | `cloud:read`, active device | → raw ciphertext bytes. |
@@ -64,7 +64,8 @@ Every request that carries material protected by the vault key must state `keyVe
 | Method & path | Scope / extra | Purpose |
 | --- | --- | --- |
 | `GET /api/cloud/vault/rotation` | `cloud:read`, active browser | The in-progress rotation, this browser's `nextEnvelope` and remaining counts |
-| `POST /api/cloud/vault/rotation` | `cloud:write` + step-up, active browser | `{reason, keyVersion, envelopes:[{vaultDeviceId, envelope}], recoveryEnvelope, recoveryProof}`. Returns `409 devices_changed` / `rotation_in_progress` / `stale_key` |
+| `POST /api/cloud/vault/rotation` | `cloud:write` + step-up, active browser | `{reason, keyVersion, envelopes:[{vaultDeviceId, envelope}], recoveryEnvelope, recoveryProof, transitionProof, keepRecovery?}`. `transitionProof` is required (HMAC under the outgoing key). With `keepRecovery`, `recoveryProof` must match the current verifier. Returns `409 devices_changed` / `rotation_in_progress` / `stale_key` / `recovery_replacement_required`, or `403 recovery_mismatch` |
+| `GET /api/cloud/stale` | `cloud:read`, active browser | Files whose contents predate the current vault key (deep-rotation candidates) |
 | `GET /api/cloud/vault/rotation/work` | active browser | Up to 200 each of files, folders and Space items still to re-wrap |
 | `POST /api/cloud/vault/rotation/batch` | active browser | `{rotationId, files?, folders?, items?}`. Idempotent |
 | `POST /api/cloud/vault/rotation/commit` | active browser | Atomic swap. Returns `409 rotation_incomplete` with `detail` counts if anything is missing |
