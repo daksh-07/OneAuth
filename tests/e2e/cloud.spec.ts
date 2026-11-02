@@ -213,6 +213,16 @@ test('flagship: encrypted document and workspace move to an approved second brow
   await expect(a.getByRole('dialog')).toHaveCount(0, { timeout: 30_000 });
   const versions = await sql<{ key_version: number }>(`select key_version from vaults v join users u on u.id = v.user_id where u.display_name = $1`, [name]);
   expect(versions[0].key_version).toBe(2);
+  // Deep rotation: re-encrypt contents encrypted before the replacement. The good file is replaced; the file
+  // corrupted in storage earlier fails authentication, is reported, and stays as it was.
+  await expect(a.getByText('2 files were encrypted before your last key replacement')).toBeVisible({ timeout: 20_000 });
+  await a.getByRole('button', { name: /Re-encrypt them now/ }).click();
+  await expect(a.getByText('1 file couldn’t be re-encrypted this time.')).toBeVisible({ timeout: 30_000 });
+  const contentVersions = await sql<{ content_version: number }>(
+    `select f.content_version from cloud_files f join users u on u.id = f.user_id where u.display_name = $1 and f.status = 'ready' order by f.content_version`,
+    [name],
+  );
+  expect(contentVersions.map((r) => r.content_version)).toEqual([1, 2]);
   // The laptop still opens the document under the new key.
   const again = await readDownload(a, async () => {
     await a.getByRole('button', { name: 'Actions for flagship-test.txt' }).click();

@@ -214,11 +214,29 @@ export type Progress = (fraction: number, phase: 'encrypting' | 'uploading' | 'd
  */
 export async function uploadFile(vaultKey: Uint8Array, keyVersion: number, file: File, folderId: string | null, onProgress: Progress = () => {}) {
   if (file.size > MAX_FILE_BYTES) throw new ApiError('too_large', `${file.name} is larger than the 25 MB preview limit.`, 413);
+  const plaintext = new Uint8Array(await file.arrayBuffer());
+  const meta: FileMeta = { name: file.name, type: file.type || 'application/octet-stream', size: file.size, modified: file.lastModified };
+  return uploadBytes(vaultKey, keyVersion, plaintext, meta, folderId, null, onProgress);
+}
+
+/**
+ * Encrypts with a fresh file key and file ID, then uploads in parts. With
+ * `replacesFileId` it's a deep-rotation re-encryption: the server swaps it in
+ * for that file only after verifying it (see items.ts swapReencrypted). Any
+ * failure cancels the upload, releasing its reservation; the original stays.
+ */
+async function uploadBytes(
+  vaultKey: Uint8Array,
+  keyVersion: number,
+  plaintext: Uint8Array,
+  meta: FileMeta,
+  folderId: string | null,
+  replacesFileId: string | null,
+  onProgress: Progress,
+) {
   const fileId = crypto.randomUUID();
   const fk = await v.generateFileKey();
-  const plaintext = new Uint8Array(await file.arrayBuffer());
   const object = await v.encryptFile(fk, fileId, plaintext, (d, t) => onProgress(d / t, 'encrypting'));
-  const meta: FileMeta = { name: file.name, type: file.type || 'application/octet-stream', size: file.size, modified: file.lastModified };
   const { partCount } = await postJson<{ partCount: number }>('/api/cloud/files', {
     fileId,
     folderId,
@@ -227,6 +245,7 @@ export async function uploadFile(vaultKey: Uint8Array, keyVersion: number, file:
     encryptedMeta: await v.sealJson(fk, 'meta', fileId, meta),
     wrappedKey: await v.wrapFileKey(vaultKey, fk),
     keyVersion,
+    ...(replacesFileId ? { replacesFileId } : {}),
   });
   try {
     for (let i = 0; i < partCount; i++) {
@@ -249,6 +268,20 @@ export async function uploadFile(vaultKey: Uint8Array, keyVersion: number, file:
     throw err;
   }
   return fileId;
+}
+
+/** Files whose contents predate the current vault key (docs/cloud/key-rotation.md §7). */
+export const listStaleContent = () => request<{ files: FileRow[] }>('GET', '/api/cloud/stale');
+
+/**
+ * Deep rotation for one file: decrypt it here, re-encrypt it under a new file
+ * key and file ID, and let the server swap it in atomically. Afterwards no
+ * file key a removed browser may have kept opens the stored contents.
+ */
+export async function reencryptFile(vaultKey: Uint8Array, keyVersion: number, row: FileRow, onProgress: Progress = () => {}) {
+  const { blob, meta } = await downloadFile(vaultKey, row, onProgress);
+  const plaintext = new Uint8Array(await blob.arrayBuffer());
+  return uploadBytes(vaultKey, keyVersion, plaintext, meta, row.folder_id, row.id, onProgress);
 }
 
 /** Downloads ciphertext parts and decrypts locally. Any tampering fails decryption. */

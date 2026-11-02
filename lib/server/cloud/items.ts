@@ -149,6 +149,8 @@ export interface InitiateInput {
   wrappedKey: unknown;
   /** The vault-key version the client wrapped `wrappedKey` under. */
   keyVersion: unknown;
+  /** Deep rotation: this upload is a re-encryption of that (ready) file and replaces it on completion. */
+  replacesFileId?: unknown;
 }
 
 /**
@@ -168,6 +170,7 @@ export async function initiateUpload(session: SessionRecord, input: InitiateInpu
   const meta = sealed(input.encryptedMeta, 4000);
   if (typeof input.wrappedKey !== 'string' || !/^[A-Za-z0-9+/]{54}==$/.test(input.wrappedKey)) throw new UserFacingError('invalid', 'Invalid file key.');
   const partCount = Math.ceil(size / PART_SIZE);
+  const replaces = input.replacesFileId == null ? null : uuid(input.replacesFileId, 'file');
   await rateLimit(`cloud:upload:${session.user_id}`, 300, 600);
   return asUser(session.user_id, async () => {
     await requireActiveVaultDevice(session);
@@ -175,13 +178,16 @@ export async function initiateUpload(session: SessionRecord, input: InitiateInpu
     // Uploading into a folder races with deleting that folder (files cascade with it).
     if (folderId) await lockTree(session.user_id);
     await liveFolder(folderId);
+    if (replaces && !(await one(`select 1 from cloud_files where id = $1 and status = 'ready'`, [replaces]))) throw notFound();
     await reserve(session.user_id, size);
     const row = await one<{ id: string }>(
-      `insert into cloud_files (id, user_id, folder_id, status, size_bytes, part_count, sha256, encrypted_meta, wrapped_key, uploaded_by, key_version)
-       values ($1, $2, $3, 'uploading', $4, $5, $6, $7, $8, $9, $10) on conflict (id) do nothing returning id`,
-      [fileId, session.user_id, folderId, size, partCount, Buffer.from(input.sha256 as string, 'hex'), meta, input.wrappedKey, session.device_id, v.key_version],
+      `insert into cloud_files (id, user_id, folder_id, status, size_bytes, part_count, sha256, encrypted_meta, wrapped_key, uploaded_by, key_version,
+                                content_version, replaces_file_id)
+       values ($1, $2, $3, 'uploading', $4, $5, $6, $7, $8, $9, $10, $10, $11) on conflict do nothing returning id`,
+      [fileId, session.user_id, folderId, size, partCount, Buffer.from(input.sha256 as string, 'hex'), meta, input.wrappedKey, session.device_id, v.key_version, replaces],
     );
-    if (!row) throw new UserFacingError('conflict', 'That file ID is already in use.', 409);
+    // Either the ID is taken or that file already has a re-encryption in progress (unique index).
+    if (!row) throw new UserFacingError('conflict', replaces ? 'That file is already being re-encrypted.' : 'That file ID is already in use.', 409);
     void ctx;
     return { fileId, partSize: PART_SIZE, partCount };
   });
@@ -219,10 +225,13 @@ export async function completeUpload(session: SessionRecord, fileIdRaw: string, 
   const fileId = uuid(fileIdRaw, 'file');
   return asUser(session.user_id, async () => {
     await requireActiveVaultDevice(session);
-    // Lock usage first, then the file (same order as reserve) to avoid deadlocks.
+    // Lock order everywhere: folder tree, then usage, then rows. A re-encryption
+    // swap needs the tree lock (it moves pins and folder placement), so take it first.
+    const pre = await one<{ replaces_file_id: string | null }>(`select replaces_file_id from cloud_files where id = $1`, [fileId]);
+    if (pre?.replaces_file_id) await lockTree(session.user_id);
     await one(`select 1 from storage_usage where user_id = $1 for update`, [session.user_id]);
-    const f = await one<{ size_bytes: string; part_count: number; status: string; sha256: Buffer }>(
-      `select size_bytes, part_count, status, sha256 from cloud_files where id = $1 for update`,
+    const f = await one<{ size_bytes: string; part_count: number; status: string; sha256: Buffer; replaces_file_id: string | null; created_at: Date }>(
+      `select size_bytes, part_count, status, sha256, replaces_file_id, created_at from cloud_files where id = $1 for update`,
       [fileId],
     );
     if (!f || f.status !== 'uploading') throw notFound();
@@ -231,12 +240,65 @@ export async function completeUpload(session: SessionRecord, fileIdRaw: string, 
       throw new UserFacingError('integrity_mismatch', 'The upload didn’t arrive intact. Please try again.', 409);
     }
     await settle(session.user_id, Number(f.size_bytes));
+    if (f.replaces_file_id) {
+      await swapReencrypted(session.user_id, fileId, f.replaces_file_id, f.created_at);
+      await recordEvent({ type: 'cloud.file_reencrypted', userId: session.user_id, deviceId: session.device_id, sessionId: session.id }, ctx);
+      return { ok: true, replaced: f.replaces_file_id };
+    }
     await query(`update cloud_files set status = 'ready', updated_at = now() where id = $1`, [fileId]);
     await recordEvent(
       { type: 'cloud.file_uploaded', userId: session.user_id, deviceId: session.device_id, sessionId: session.id, detail: { bytes: Number(f.size_bytes) } },
       ctx,
     );
     return { ok: true };
+  });
+}
+
+/**
+ * Deep rotation, final step (inside completeUpload's transaction, usage row
+ * already locked): the verified re-encrypted object takes the old file's
+ * place in one step, so the vault is never without a readable copy. Refused
+ * if the old file went away or changed (renamed or moved) since the
+ * re-encryption started; the client then starts again from the current version.
+ */
+async function swapReencrypted(userId: string, newId: string, oldId: string, startedAt: Date) {
+  // Caller holds the tree and usage locks (in that order).
+  const old = await one<{ size_bytes: string; status: string; updated_at: Date }>(
+    `select size_bytes, status, updated_at from cloud_files where id = $1 for update`,
+    [oldId],
+  );
+  if (!old || old.status !== 'ready') {
+    throw new UserFacingError('replace_target_gone', 'The original file was deleted while it was being re-encrypted.', 409);
+  }
+  if (old.updated_at > startedAt) {
+    throw new UserFacingError('changed_during_reencrypt', 'The file changed while it was being re-encrypted. Try again.', 409);
+  }
+  await query(
+    `update cloud_files n set status = 'ready', replaces_file_id = null, folder_id = o.folder_id, favorite = o.favorite,
+            trashed_at = o.trashed_at, created_at = o.created_at, updated_at = o.updated_at
+       from cloud_files o where n.id = $1 and o.id = $2`,
+    [newId, oldId],
+  );
+  await query(`update space_pins set file_id = $1 where file_id = $2`, [newId, oldId]);
+  await query(`delete from cloud_files where id = $1`, [oldId]); // parts cascade
+  await storage().remove(oldId);
+  await release(userId, Number(old.size_bytes), 'used');
+}
+
+/** Files whose contents were encrypted under an earlier vault key (deep rotation candidates). */
+export async function staleContent(session: SessionRecord) {
+  assertCloudSession(session, 'read');
+  return asUser(session.user_id, async () => {
+    await requireActiveVaultDevice(session);
+    const files = await query<FileRow>(
+      `select f.id, f.folder_id, f.size_bytes, f.part_count, f.encrypted_meta, f.wrapped_key, f.favorite, f.created_at, f.updated_at, f.trashed_at
+         from cloud_files f, vaults v
+        where f.status = 'ready' and f.content_version < v.key_version
+          and not exists (select 1 from cloud_files r where r.replaces_file_id = f.id)
+        order by f.size_bytes limit $1`,
+      [MAX_LISTED],
+    );
+    return { files: files.map((f) => ({ ...f, size_bytes: Number(f.size_bytes) })) };
   });
 }
 
@@ -267,6 +329,7 @@ export async function updateFile(
   const fileId = uuid(fileIdRaw, 'file');
   return asUser(session.user_id, async () => {
     await requireActiveVaultDevice(session);
+    if (input.folderId !== undefined) await lockTree(session.user_id); // before any row lock (lock order)
     const f = await one(`select 1 from cloud_files where id = $1 and status = 'ready' for update`, [fileId]);
     if (!f) throw notFound();
     if (input.encryptedMeta !== undefined) {
@@ -274,7 +337,6 @@ export async function updateFile(
     }
     if (input.folderId !== undefined) {
       const folderId = input.folderId === null ? null : uuid(input.folderId, 'folder');
-      await lockTree(session.user_id);
       await liveFolder(folderId);
       await query(`update cloud_files set folder_id = $2, updated_at = now() where id = $1`, [fileId, folderId]);
     }

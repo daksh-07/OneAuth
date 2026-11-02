@@ -14,6 +14,7 @@ import { VaultDevices } from './vault-devices';
 import { VaultSetup } from './vault-setup';
 import { RotateKeyDialog, RotationInProgress } from './key-rotation';
 import { ConfirmThisBrowser } from './confirm-browser';
+import { ReencryptExisting } from './deep-rotation';
 
 type Phase =
   | { kind: 'loading' }
@@ -30,6 +31,8 @@ export function CloudApp({ userId, initialFolder = null }: { userId: string; ini
   const [rotate, setRotate] = useState<{ reason: 'device_removed' | 'manual' } | null>(null);
   const [removedName, setRemovedName] = useState<string | null>(null);
   const [confirmCode, setConfirmCode] = useState<string | null>(null);
+  const [syncTick, setSyncTick] = useState(0);
+  const [filesChanged, setFilesChanged] = useState(0);
 
   // Whether this browser had a vault record during this visit: if it disappears, access was declined or removed.
   const hadRecord = useRef(false);
@@ -66,6 +69,7 @@ export function CloudApp({ userId, initialFolder = null }: { userId: string; ini
         s = await cloud.getState();
       }
       setState(s);
+      setSyncTick((t) => t + 1);
       hadRecord.current = Boolean(s.device);
       if (s.device?.status === 'active') {
         const keyVersion = s.vault!.key_version;
@@ -218,7 +222,19 @@ export function CloudApp({ userId, initialFolder = null }: { userId: string; ini
               from now on.
             </Notice>
           ) : null}
+          {!state.rotation && phase.trusted && phase.keyVersion > 1 ? (
+            <ReencryptExisting
+              vaultKey={phase.vaultKey}
+              keyVersion={phase.keyVersion}
+              tick={syncTick}
+              onDone={() => {
+                setFilesChanged((n) => n + 1); // replaced files have new IDs: reload the listing
+                void sync();
+              }}
+            />
+          ) : null}
           <FileBrowser
+            reloadKey={filesChanged}
             initialFolder={initialFolder}
             vaultKey={phase.vaultKey}
             keyVersion={phase.keyVersion}

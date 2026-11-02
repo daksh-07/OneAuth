@@ -30,7 +30,8 @@ export type SecurityEventType =
   | 'cloud.rotation_started'
   | 'cloud.rotation_aborted'
   | 'cloud.vault_rotated'
-  | 'space.updated';
+  | 'space.updated'
+  | 'cloud.file_reencrypted';
 
 export interface RequestContext {
   ip: string | null;

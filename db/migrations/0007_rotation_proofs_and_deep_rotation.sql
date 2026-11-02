@@ -18,5 +18,10 @@ alter table vaults add column recovery_set_at timestamptz not null default now()
 
 -- 3. Deep rotation: a file re-encrypted under a new file key is uploaded as a
 --    new object that replaces the old one atomically when it completes.
+--    content_version records the vault-key version current when the contents
+--    were encrypted; key rotation never changes it (only wrapped keys move), so
+--    content_version < vaults.key_version marks files a removed browser that
+--    kept older keys could still decrypt if it ever obtained the ciphertext.
 alter table cloud_files add column replaces_file_id uuid;
+alter table cloud_files add column content_version integer not null default 1;
 create unique index cloud_files_one_replacement on cloud_files(replaces_file_id) where replaces_file_id is not null;

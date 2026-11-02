@@ -28,6 +28,7 @@ const LABELS: Record<string, string> = {
   'cloud.rotation_aborted': 'Vault key replacement cancelled',
   'cloud.vault_rotated': 'Vault key replaced',
   'space.updated': 'Space settings changed',
+  'cloud.file_reencrypted': 'File re-encrypted under the current key',
 };
 
 export function eventLabel(type: string, detail?: Record<string, unknown>): string {

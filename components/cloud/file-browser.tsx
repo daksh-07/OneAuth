@@ -94,6 +94,7 @@ export function FileBrowser({
   readOnly = false,
   onUsageChange,
   initialFolder = null,
+  reloadKey = 0,
 }: {
   vaultKey: Uint8Array;
   keyVersion: number;
@@ -102,6 +103,8 @@ export function FileBrowser({
   readOnly?: boolean;
   onUsageChange: () => void;
   initialFolder?: string | null;
+  /** Changes when files were replaced elsewhere on the page (e.g. re-encryption), forcing a reload. */
+  reloadKey?: number;
 }) {
   const toast = useToast();
   const [view, setView] = useState<View>('folder');
@@ -186,10 +189,11 @@ export function FileBrowser({
   useEffect(() => {
     const t = setTimeout(() => {
       setItems(null);
+      setEverything(null);
       void load();
     }, 0);
     return () => clearTimeout(t);
-  }, [load]);
+  }, [load, reloadKey]);
 
   useEffect(() => {
     if (!searching || everything) return;
