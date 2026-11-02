@@ -91,9 +91,9 @@ export function errorResponse(err: unknown) {
   if (err instanceof BackendNotConfiguredError) {
     return NextResponse.json({ error: 'backend_unavailable', message: 'OneAuth’s backend isn’t configured on this deployment.' }, { status: 503 });
   }
-  // Driver and upstream exception messages can contain connection details,
-  // request fragments, or SQL parameters. Keep the diagnostic category only.
-  console.error(JSON.stringify({ level: 'error', msg: 'unhandled route error', name: (err as Error)?.name ?? 'UnknownError' }));
+  // Driver and upstream exceptions can carry secrets in both message and name.
+  // Log a fixed category without serialising any part of an unknown error.
+  console.error(JSON.stringify({ level: 'error', msg: 'unhandled route error' }));
   return NextResponse.json({ error: 'internal', message: 'Something went wrong. Please try again.' }, { status: 500 });
 }
 
