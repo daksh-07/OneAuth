@@ -12,9 +12,9 @@ import { cloudEnabled } from '@/lib/server/cloud/access';
 export const metadata: Metadata = { title: 'My Space' };
 
 const PLANNED = [
-  { icon: Bookmark, title: 'Bookmarks', body: 'A small set of links that follow you to any connected device.' },
-  { icon: Link2, title: 'Service shortcuts', body: 'Quick links to supported services. OneAuth won’t sign in to them for you unless the service supports it.' },
-  { icon: SlidersHorizontal, title: 'Preferences', body: 'Your OneAuth settings, applied when you open it on a new device.' },
+  { icon: Link2, title: 'Supported service sign-in', body: 'Opening a service already signed in, only where it offers a supported way (such as passkeys or OAuth). Shortcuts today just open the site.' },
+  { icon: SlidersHorizontal, title: 'Account-wide preferences', body: 'OneAuth settings that apply on every device. Today, preferences are per space.' },
+  { icon: Bookmark, title: 'Import bookmarks', body: 'Bring a bookmarks file from your browser into a space, encrypted on your device.' },
 ];
 
 export default async function SpacePage() {

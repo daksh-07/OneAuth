@@ -67,7 +67,7 @@ export function RecoveryKeyStep({
       >
         {groups.map((g, i) => (
           <li key={i} className="flex items-baseline gap-1.5">
-            <span className="w-4 text-right font-sans text-[11px] text-subtle" aria-hidden="true">
+            <span className="w-4 text-right font-sans text-[11px] text-muted" aria-hidden="true">
               {i + 1}
             </span>
             <span className={i === groups.length - 1 ? 'text-muted' : undefined}>{g}</span>
