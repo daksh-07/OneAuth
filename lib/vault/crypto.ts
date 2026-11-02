@@ -393,3 +393,20 @@ export async function unwrapVaultKeyForRecovery(envelope: string, recoveryKey: U
     throw new VaultCryptoError('That recovery key doesn’t unlock this vault');
   }
 }
+
+/**
+ * Proof that a client holds the recovery key, without revealing it or KRK:
+ * HKDF-SHA256(RK, salt = vaultId, info = "oneauth/v1/recovery-proof"), 32 bytes, base64.
+ * The server stores only SHA-256 of this value (set at vault creation) and
+ * compares on recovery, so a device can't make itself active via "recovery"
+ * without the key. Domain-separated from KRK by the HKDF info string.
+ */
+export async function recoveryProof(recoveryKey: Uint8Array, vaultId: string): Promise<string> {
+  const base = await subtle.importKey('raw', recoveryKey as Uint8Array<ArrayBuffer>, 'HKDF', false, ['deriveBits']);
+  const bits = await subtle.deriveBits(
+    { name: 'HKDF', hash: 'SHA-256', salt: uuidBytes(vaultId) as Uint8Array<ArrayBuffer>, info: enc.encode('oneauth/v1/recovery-proof') },
+    base,
+    256,
+  );
+  return toBase64(new Uint8Array(bits));
+}

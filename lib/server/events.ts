@@ -18,7 +18,15 @@ export type SecurityEventType =
   | 'pairing.approved'
   | 'pairing.rejected'
   | 'pairing.claimed'
-  | 'account.exported';
+  | 'account.exported'
+  | 'cloud.vault_created'
+  | 'cloud.device_registered'
+  | 'cloud.device_approved'
+  | 'cloud.recovery_used'
+  | 'cloud.device_revoked'
+  | 'cloud.file_uploaded'
+  | 'cloud.file_trashed'
+  | 'cloud.file_deleted';
 
 export interface RequestContext {
   ip: string | null;

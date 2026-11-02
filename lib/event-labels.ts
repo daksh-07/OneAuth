@@ -16,6 +16,14 @@ const LABELS: Record<string, string> = {
   'pairing.approved': 'Device connection approved',
   'pairing.rejected': 'Device connection declined',
   'pairing.claimed': 'New device connected',
+  'cloud.vault_created': 'Encrypted Cloud set up',
+  'cloud.device_registered': 'Device asked for Cloud access',
+  'cloud.device_approved': 'Device given Cloud access',
+  'cloud.recovery_used': 'Recovery key used to unlock Cloud',
+  'cloud.device_revoked': 'Device’s Cloud access removed',
+  'cloud.file_uploaded': 'File uploaded to Cloud',
+  'cloud.file_trashed': 'File moved to trash',
+  'cloud.file_deleted': 'File deleted permanently',
 };
 
 export function eventLabel(type: string, detail?: Record<string, unknown>): string {
@@ -25,7 +33,8 @@ export function eventLabel(type: string, detail?: Record<string, unknown>): stri
 
 export function eventTone(type: string, detail?: Record<string, unknown>): 'neutral' | 'warning' | 'danger' | 'success' {
   if (type === 'auth.signin_failed' || (type === 'pairing.rejected' && detail?.reason === 'code_mismatch')) return 'warning';
-  if (type === 'device.revoked' || type === 'session.revoked' || type === 'passkey.removed') return 'danger';
+  if (type === 'device.revoked' || type === 'session.revoked' || type === 'passkey.removed' || type === 'cloud.device_revoked') return 'danger';
+  if (type === 'cloud.recovery_used' || type === 'cloud.device_registered') return 'warning';
   if (type === 'pairing.claimed' || type === 'passkey.added' || type === 'account.created') return 'success';
   return 'neutral';
 }

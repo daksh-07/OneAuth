@@ -27,7 +27,8 @@ Vault key  VK  (AES-256, random, one per user, generated on the first device)
       content:  chunked AES-256-GCM under FK (§4)    →  object storage
       metadata: AES-256-GCM under FK (name, type, plaintext size, mtime)  →  cloud_files.encrypted_meta
 Recovery key RK (256 random bits, shown once to the user as 13 groups of 4 Base32 characters)
- └─ KRK = HKDF-SHA256(RK, salt = vaultId, info = "oneauth/v1/recovery")  (AES-KW)
+ ├─ KRK = HKDF-SHA256(RK, salt = vaultId, info = "oneauth/v1/recovery")  (AES-KW)
+ └─ Recovery proof RP = HKDF-SHA256(RK, salt = vaultId, info = "oneauth/v1/recovery-proof"); server stores SHA-256(RP)
 Device key DK (ECDH P-256, generated in the browser, private key non-extractable, kept in IndexedDB)
 ```
 
@@ -41,7 +42,7 @@ Device key DK (ECDH P-256, generated in the browser, private key non-extractable
 2. The fingerprint is the first 8 Base32 characters of `SHA-256(canonical public JWK)`, displayed as `XXXX-XXXX`. The new device shows it.
 3. On an already-approved device, Cloud lists pending devices. The approver's browser **recomputes the fingerprint from the public key the server returned** and shows it. The user approves only if it matches the one on the new device's screen. This detects a server (or attacker) substituting its own public key.
 4. Approval requires a passkey step-up (existing `reauth_at` window). The approving browser wraps VK to the new device's public key and uploads the envelope. The server checks that the approver is an `active` vault device of the **same user**, and stores it.
-5. Alternatively, the new device enters the **recovery key**. It unwraps VK locally, wraps it to its own DK, and becomes `active`. This is logged as `cloud.recovery_used`.
+5. Alternatively, the new device enters the **recovery key**. It unwraps VK locally, wraps it to its own DK, and becomes `active`. To stop a pending device from activating itself without the key, it also sends the recovery proof RP; the server compares SHA-256(RP) with the verifier stored at vault creation (constant-time). RP is domain-separated from KRK, so the verifier reveals nothing usable to unwrap VK. This is logged as `cloud.recovery_used`.
 
 Shared or temporary devices and paired sessions get **no** Cloud access in v1: the `cloud:*` scopes aren't grantable to them.
 
