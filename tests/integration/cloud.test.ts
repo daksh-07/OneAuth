@@ -326,6 +326,19 @@ describe('quota and upload integrity', () => {
   });
 });
 
+describe('account deletion', () => {
+  it('removes the vault, files, ciphertext and usage with the account', async () => {
+    const { deleteAccount } = await import('@/lib/server/account');
+    const user = await createUser();
+    const { a, vk } = await setUpVault(user);
+    await upload(a, vk, new TextEncoder().encode('to be deleted'));
+    await deleteAccount(await a.session(), 'delete my account');
+    for (const t of ['vaults', 'vault_devices', 'cloud_files', 'cloud_object_parts', 'storage_usage']) {
+      expect(await query(`select 1 from ${t} where user_id = $1`, [user.userId])).toHaveLength(0);
+    }
+  });
+});
+
 describe('folders, trash and favourites', () => {
   it('organises files and prevents folder cycles', async () => {
     const user = await createUser();
