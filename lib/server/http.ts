@@ -80,7 +80,7 @@ export async function readBytes(req: NextRequest, max: number): Promise<Uint8Arr
 
 export function errorResponse(err: unknown) {
   if (err instanceof UserFacingError) {
-    return NextResponse.json({ error: err.code, message: err.message }, { status: err.status });
+    return NextResponse.json({ error: err.code, message: err.message, ...(err.detail ? { detail: err.detail } : {}) }, { status: err.status });
   }
   if (err instanceof RateLimitError) {
     return NextResponse.json(

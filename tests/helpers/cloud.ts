@@ -58,6 +58,7 @@ export async function upload(b: Browser, vk: Uint8Array, plaintext: Uint8Array, 
       sha256: Buffer.from(await v.sha256(object)).toString('hex'),
       encryptedMeta: await v.sealJson(fk, 'meta', fileId, { name: opts.name ?? 'notes.txt', type: 'text/plain', size: plaintext.length }),
       wrappedKey: await v.wrapFileKey(vk, fk),
+      keyVersion: 1,
     },
     ctx(),
   );

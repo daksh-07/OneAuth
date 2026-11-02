@@ -24,6 +24,10 @@ const LABELS: Record<string, string> = {
   'cloud.file_uploaded': 'File uploaded to Cloud',
   'cloud.file_trashed': 'File moved to trash',
   'cloud.file_deleted': 'File deleted permanently',
+  'cloud.rotation_started': 'Vault key replacement started',
+  'cloud.rotation_aborted': 'Vault key replacement cancelled',
+  'cloud.vault_rotated': 'Vault key replaced',
+  'space.updated': 'Space settings changed',
 };
 
 export function eventLabel(type: string, detail?: Record<string, unknown>): string {

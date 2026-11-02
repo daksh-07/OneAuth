@@ -26,7 +26,11 @@ export type SecurityEventType =
   | 'cloud.device_revoked'
   | 'cloud.file_uploaded'
   | 'cloud.file_trashed'
-  | 'cloud.file_deleted';
+  | 'cloud.file_deleted'
+  | 'cloud.rotation_started'
+  | 'cloud.rotation_aborted'
+  | 'cloud.vault_rotated'
+  | 'space.updated';
 
 export interface RequestContext {
   ip: string | null;

@@ -19,7 +19,7 @@ beforeAll(() => {
   process.env.ONEAUTH_CLOUD_PREVIEW = '1';
 });
 
-const placeholder = { sha256: '0'.repeat(64), encryptedMeta: 'A'.repeat(40), wrappedKey: 'A'.repeat(54) + '==' };
+const placeholder = { sha256: '0'.repeat(64), encryptedMeta: 'A'.repeat(40), wrappedKey: 'A'.repeat(54) + '==', keyVersion: 1 };
 
 describe('F1: abandoned uploads', () => {
   it('releases a stale reservation instead of blocking the account forever', async () => {
@@ -59,7 +59,7 @@ describe('F1: abandoned uploads', () => {
 describe('F2: folder tree races', () => {
   async function folder(s: Awaited<ReturnType<Awaited<ReturnType<typeof setUpVault>>['a']['session']>>, nk: CryptoKey, parentId: string | null) {
     const id = randomUUID();
-    await items.createFolder(s, { id, parentId, encryptedName: await v.sealJson(nk, 'folder', id, { name: 'x' }) });
+    await items.createFolder(s, { id, parentId, encryptedName: await v.sealJson(nk, 'folder', id, { name: 'x' }) , keyVersion: 1 });
     return id;
   }
 
@@ -144,7 +144,7 @@ describe('F4/F5: enrolment authorisation', () => {
     // Simulate a leftover request (e.g. written before the disconnect committed).
     await query(`update devices set revoked_at = now() where id = $1`, [bDevice]);
     await expect(
-      vault.approveVaultDevice(await a.session(), reg.id, { envelope: await v.wrapVaultKeyForDevice(vk, b.jwk), fingerprint: reg.fingerprint }, ctx()),
+      vault.approveVaultDevice(await a.session(), reg.id, { envelope: await v.wrapVaultKeyForDevice(vk, b.jwk), fingerprint: reg.fingerprint, keyVersion: 1 }, ctx()),
     ).rejects.toMatchObject({ code: 'not_pending' });
     const row = await query<{ status: string }>(`select status from vault_devices where id = $1`, [reg.id]);
     expect(row[0].status).toBe('pending');

@@ -9,7 +9,7 @@ type Ctx = { params: Promise<{ id: string }> };
 export const POST = jsonRoute<Ctx>(async (req, _origin, { params }) => {
   const session = await requireSession('cloud:write');
   const body = await readJson<Record<string, unknown>>(req);
-  return approveVaultDevice(session, (await params).id, { envelope: body.envelope, fingerprint: body.fingerprint }, await requestContext());
+  return approveVaultDevice(session, (await params).id, { envelope: body.envelope, fingerprint: body.fingerprint, keyVersion: body.keyVersion }, await requestContext());
 });
 
 export const DELETE = jsonRoute<Ctx>(async (_req, _origin, { params }) => {

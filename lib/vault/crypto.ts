@@ -94,6 +94,12 @@ async function hkdf(raw: Uint8Array, salt: Uint8Array, info: string, usage: 'AES
   );
 }
 
+/** Key for encrypting Space items (bookmarks, shortcuts): HKDF(VK, salt = vaultId, info = "oneauth/v1/space"). */
+export function deriveSpaceKey(vaultKey: Uint8Array, vaultId: string): Promise<CryptoKey> {
+  assertKey(vaultKey);
+  return hkdf(vaultKey, uuidBytes(vaultId), 'oneauth/v1/space', 'AES-GCM');
+}
+
 /** Key for encrypting folder names: HKDF(VK, salt = vaultId, info = "oneauth/v1/names"). */
 export function deriveNameKey(vaultKey: Uint8Array, vaultId: string): Promise<CryptoKey> {
   assertKey(vaultKey);
@@ -110,6 +116,23 @@ export function generateFileKey(): Promise<CryptoKey> {
 /** AES-KW(VK, FK): 40 bytes, base64. */
 export async function wrapFileKey(vaultKey: Uint8Array, fileKey: CryptoKey): Promise<string> {
   return toBase64(new Uint8Array(await subtle.wrapKey('raw', fileKey, await kwKey(vaultKey), 'AES-KW')));
+}
+
+/**
+ * Key rotation: re-wraps a file key from one vault key to another. The file key
+ * is extractable only inside this function (AES-KW needs that to re-wrap it)
+ * and is never returned. The result is checked to unwrap under the new key.
+ */
+export async function rewrapFileKey(oldVaultKey: Uint8Array, newVaultKey: Uint8Array, wrapped: string): Promise<string> {
+  let fk: CryptoKey;
+  try {
+    fk = await subtle.unwrapKey('raw', fromBase64(wrapped), await kwKey(oldVaultKey), 'AES-KW', { name: 'AES-GCM' }, true, ['encrypt', 'decrypt']);
+  } catch {
+    throw new VaultCryptoError('A file key couldn’t be unwrapped with the current vault key');
+  }
+  const next = toBase64(new Uint8Array(await subtle.wrapKey('raw', fk, await kwKey(newVaultKey), 'AES-KW')));
+  await unwrapFileKey(newVaultKey, next); // throws if the new wrapping is unusable
+  return next;
 }
 
 export async function unwrapFileKey(vaultKey: Uint8Array, wrapped: string): Promise<CryptoKey> {

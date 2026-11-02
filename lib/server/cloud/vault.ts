@@ -6,7 +6,7 @@ import { recordEvent, type RequestContext } from '../events';
 import { requireFreshReauth } from '../webauthn';
 import type { SessionRecord } from '../sessions';
 import { deviceFingerprint, isPublicDeviceJwk, type PublicDeviceJwk } from '../../vault/crypto';
-import { assertCloudSession, requireActiveVaultDevice, vaultDeviceFor } from './access';
+import { assertCloudSession, assertVaultKeyWritable, requireActiveVaultDevice, vaultDeviceFor } from './access';
 import { usageFor } from './quota';
 import { rateLimit } from '../ratelimit';
 
@@ -55,8 +55,14 @@ export async function getVaultState(session: SessionRecord) {
           [session.user_id, session.device_id],
         )
       : [];
+    const rotation = vault
+      ? await one<{ id: string; to_version: number; reason: string; started_at: Date }>(
+          `select id, to_version, reason, started_at from vault_rotations where status = 'in_progress'`,
+        )
+      : null;
     return {
       vault,
+      rotation,
       device: device ? { id: device.id, status: device.status, fingerprint: device.fingerprint, envelope: device.status === 'active' ? device.envelope : null } : null,
       // Only an active device may see pending requests (it's the one that can approve them).
       devices: device?.status === 'active' ? others : others.filter((o) => o.is_current),
@@ -126,7 +132,7 @@ export async function registerVaultDevice(session: SessionRecord, input: { publi
  * sends the fingerprint it displayed (computed from the public key the server
  * returned), which must match the server's record of that key.
  */
-export async function approveVaultDevice(session: SessionRecord, targetId: string, input: { envelope: unknown; fingerprint: unknown }, ctx: RequestContext) {
+export async function approveVaultDevice(session: SessionRecord, targetId: string, input: { envelope: unknown; fingerprint: unknown; keyVersion?: unknown }, ctx: RequestContext) {
   assertCloudSession(session, 'write');
   requireFreshReauth(session);
   if (!UUID.test(targetId)) throw new UserFacingError('not_found', 'Device not found.', 404);
@@ -146,6 +152,7 @@ export async function approveVaultDevice(session: SessionRecord, targetId: strin
     );
     if (!target || target.status !== 'pending') throw new UserFacingError('not_pending', 'That device isn’t waiting for approval.', 409);
     if (input.fingerprint !== target.fingerprint) throw new UserFacingError('fingerprint_mismatch', 'The security code doesn’t match that device.', 409);
+    await assertVaultKeyWritable(input.keyVersion);
     await query(`update vault_devices set status = 'active', envelope = $2, approved_via = 'device', approved_at = now() where id = $1`, [targetId, envelope]);
     await recordEvent(
       { type: 'cloud.device_approved', userId: session.user_id, deviceId: session.device_id, sessionId: session.id, detail: { approvedDevice: target.device_id } },
@@ -174,6 +181,8 @@ export async function recoverVaultDevice(session: SessionRecord, input: { envelo
   return asUser(session.user_id, async () => {
     const dev = await vaultDeviceFor(session);
     if (!dev || dev.status !== 'pending') throw new UserFacingError('not_pending', 'Register this device first.', 409);
+    // Recovery unwraps the *current* vault key, so the version check doesn't apply; a rotation does block it.
+    await assertVaultKeyWritable(undefined, { requireVersion: false });
     const v = await one<{ recovery_verifier: Buffer }>(`select recovery_verifier from vaults where id = $1`, [dev.vault_id]);
     if (!v || !timingSafeEqual(v.recovery_verifier, digest)) {
       throw new UserFacingError('recovery_mismatch', 'That recovery key doesn’t unlock this vault.', 403);

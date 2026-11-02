@@ -6,6 +6,8 @@ export class UserFacingError extends Error {
     public code: string,
     message: string,
     public status = 400,
+    /** Optional machine-readable context that is safe to return (counts, never secrets). */
+    public detail?: Record<string, unknown>,
   ) {
     super(message);
   }

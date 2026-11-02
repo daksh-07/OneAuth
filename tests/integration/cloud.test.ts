@@ -39,7 +39,7 @@ describe('vault enrolment', () => {
     await vault.approveVaultDevice(
       await a.session(),
       pending.id,
-      { envelope: await v.wrapVaultKeyForDevice(vk, pending.public_jwk), fingerprint: shown },
+      { envelope: await v.wrapVaultKeyForDevice(vk, pending.public_jwk), fingerprint: shown, keyVersion: 1 },
       ctx(),
     );
 
@@ -57,7 +57,7 @@ describe('vault enrolment', () => {
     const b = await secondBrowser(user);
     const reg = await vault.registerVaultDevice(await b.session(), { publicJwk: b.jwk }, ctx());
     await expect(
-      vault.approveVaultDevice(await a.session(), reg.id, { envelope: await v.wrapVaultKeyForDevice(vk, b.jwk), fingerprint: 'AAAA-AAAA' }, ctx()),
+      vault.approveVaultDevice(await a.session(), reg.id, { envelope: await v.wrapVaultKeyForDevice(vk, b.jwk), fingerprint: 'AAAA-AAAA', keyVersion: 1 }, ctx()),
     ).rejects.toMatchObject({ code: 'fingerprint_mismatch' });
   });
 
@@ -71,7 +71,7 @@ describe('vault enrolment', () => {
     // B is pending: can't approve C and can't see it.
     expect((await vault.getVaultState(await b.session())).devices.map((d) => d.id)).not.toContain(regC.id);
     await expect(
-      vault.approveVaultDevice(await b.session(), regC.id, { envelope: await v.wrapVaultKeyForDevice(vk, c.jwk), fingerprint: regC.fingerprint }, ctx()),
+      vault.approveVaultDevice(await b.session(), regC.id, { envelope: await v.wrapVaultKeyForDevice(vk, c.jwk), fingerprint: regC.fingerprint, keyVersion: 1 }, ctx()),
     ).rejects.toMatchObject({ code: 'vault_locked' });
 
     // Recovery with the wrong key is refused, even with a well-formed envelope.
@@ -112,7 +112,7 @@ describe('access control', () => {
     const { fileId } = await upload(a, vk, new TextEncoder().encode('hello'));
     const b = await secondBrowser(user);
     const reg = await vault.registerVaultDevice(await b.session(), { publicJwk: b.jwk }, ctx());
-    await vault.approveVaultDevice(await a.session(), reg.id, { envelope: await v.wrapVaultKeyForDevice(vk, b.jwk), fingerprint: reg.fingerprint }, ctx());
+    await vault.approveVaultDevice(await a.session(), reg.id, { envelope: await v.wrapVaultKeyForDevice(vk, b.jwk), fingerprint: reg.fingerprint, keyVersion: 1 }, ctx());
     expect((await items.getPart(await b.session(), fileId, '0')).length).toBeGreaterThan(0);
 
     await vault.revokeVaultDevice(await a.session(), reg.id, ctx());
@@ -121,7 +121,7 @@ describe('access control', () => {
 
     // Re-register and approve, then disconnect the whole device.
     const reg2 = await vault.registerVaultDevice(await b.session(), { publicJwk: b.jwk }, ctx());
-    await vault.approveVaultDevice(await a.session(), reg2.id, { envelope: await v.wrapVaultKeyForDevice(vk, b.jwk), fingerprint: reg2.fingerprint }, ctx());
+    await vault.approveVaultDevice(await a.session(), reg2.id, { envelope: await v.wrapVaultKeyForDevice(vk, b.jwk), fingerprint: reg2.fingerprint, keyVersion: 1 }, ctx());
     const bDevice = (await b.session()).device_id;
     await revokeDevice(user.userId, bDevice, (await a.session()).id, ctx());
     const row = await query<{ status: string; envelope: string | null }>(`select status, envelope from vault_devices where device_id = $1`, [bDevice]);
@@ -158,7 +158,7 @@ describe('access control', () => {
     await expect(
       items.initiateUpload(
         s,
-        { fileId, folderId: null, size: 100, sha256: '0'.repeat(64), encryptedMeta: 'A'.repeat(40), wrappedKey: 'A'.repeat(54) + '==' },
+        { fileId, folderId: null, size: 100, sha256: '0'.repeat(64), encryptedMeta: 'A'.repeat(40), wrappedKey: 'A'.repeat(54) + '==', keyVersion: 1 },
         ctx(),
       ),
     ).rejects.toThrow();
@@ -171,7 +171,7 @@ describe('quota and upload integrity', () => {
     const { a, vk } = await setUpVault(user);
     const s = await a.session();
     const quota = (await vault.getVaultState(s)).usage.quota;
-    const big = { folderId: null, sha256: '0'.repeat(64), encryptedMeta: 'A'.repeat(40), wrappedKey: 'A'.repeat(54) + '==' };
+    const big = { folderId: null, sha256: '0'.repeat(64), encryptedMeta: 'A'.repeat(40), wrappedKey: 'A'.repeat(54) + '==', keyVersion: 1 };
     // Fill most of the allowance with reservations (preview per-file cap).
     const reservations: string[] = [];
     let reserved = 0;
@@ -205,7 +205,7 @@ describe('quota and upload integrity', () => {
       Array.from({ length: n }, () =>
         items.initiateUpload(
           s,
-          { fileId: randomUUID(), folderId: null, size: items.MAX_OBJECT, sha256: '0'.repeat(64), encryptedMeta: 'A'.repeat(40), wrappedKey: 'A'.repeat(54) + '==' },
+          { fileId: randomUUID(), folderId: null, size: items.MAX_OBJECT, sha256: '0'.repeat(64), encryptedMeta: 'A'.repeat(40), wrappedKey: 'A'.repeat(54) + '==', keyVersion: 1 },
           ctx(),
         ),
       ),
@@ -220,7 +220,7 @@ describe('quota and upload integrity', () => {
     const user = await createUser();
     const { a, vk } = await setUpVault(user);
     const s = await a.session();
-    const base = { folderId: null, sha256: '0'.repeat(64), encryptedMeta: 'A'.repeat(40), wrappedKey: 'A'.repeat(54) + '==' };
+    const base = { folderId: null, sha256: '0'.repeat(64), encryptedMeta: 'A'.repeat(40), wrappedKey: 'A'.repeat(54) + '==', keyVersion: 1 };
     await expect(items.initiateUpload(s, { ...base, fileId: randomUUID(), size: items.MAX_OBJECT + 1 }, ctx())).rejects.toMatchObject({ code: 'too_large' });
     await expect(items.initiateUpload(s, { ...base, fileId: randomUUID(), size: -5 }, ctx())).rejects.toMatchObject({ code: 'too_large' });
 
@@ -237,6 +237,7 @@ describe('quota and upload integrity', () => {
         sha256: Buffer.from(await v.sha256(object)).toString('hex'),
         encryptedMeta: await v.sealJson(fk, 'meta', fileId, { name: 'x' }),
         wrappedKey: await v.wrapFileKey(vk, fk),
+        keyVersion: 1,
       },
       ctx(),
     );
@@ -276,7 +277,7 @@ describe('folders, trash and favourites', () => {
     const nk = await v.deriveNameKey(vk, vaultId);
     const mk = async (parentId: string | null, name: string) => {
       const id = randomUUID();
-      await items.createFolder(s, { id, parentId, encryptedName: await v.sealJson(nk, 'folder', id, { name }) });
+      await items.createFolder(s, { id, parentId, encryptedName: await v.sealJson(nk, 'folder', id, { name }) , keyVersion: 1 });
       return id;
     };
     const docs = await mk(null, 'Docs');

@@ -4,7 +4,7 @@ import { UserFacingError } from '../errors';
 import { recordEvent, type RequestContext } from '../events';
 import type { SessionRecord } from '../sessions';
 import { encryptedSize } from '../../vault/crypto';
-import { assertCloudSession, requireActiveVaultDevice } from './access';
+import { assertCloudSession, assertVaultKeyWritable, requireActiveVaultDevice } from './access';
 import { release, reserve, settle } from './quota';
 import { PART_SIZE, storage } from './storage';
 import { rateLimit } from '../ratelimit';
@@ -70,7 +70,9 @@ async function liveFolder(folderId: string | null) {
 
 // ---------------------------------------------------------------- listing
 
-export type View = 'folder' | 'recent' | 'favorites' | 'trash';
+export type View = 'folder' | 'recent' | 'favorites' | 'trash' | 'all';
+/** Cap for the 'all' view (search and move targets) during the preview. */
+export const MAX_LISTED = 2000;
 
 export async function listItems(session: SessionRecord, input: { folderId: string | null; view: View }) {
   assertCloudSession(session, 'read');
@@ -113,6 +115,19 @@ export async function listItems(session: SessionRecord, input: { folderId: strin
       files = await query<FileRow>(`with recursive hidden as (select id from cloud_folders where trashed_at is not null union select f.id from cloud_folders f join hidden h on f.parent_id = h.id)
          select id, folder_id, size_bytes, part_count, encrypted_meta, wrapped_key, favorite, created_at, updated_at, trashed_at from cloud_files
           where status = 'ready' and trashed_at is null and favorite and (folder_id is null or folder_id not in (select id from hidden))`);
+    } else if (input.view === 'all') {
+      // Everything that isn't in the trash (directly or via a trashed folder): for search and "Move to…".
+      folders = await query<FolderRow>(
+        `with recursive hidden as (select id from cloud_folders where trashed_at is not null union select f.id from cloud_folders f join hidden h on f.parent_id = h.id)
+         select id, parent_id, encrypted_name, updated_at, trashed_at from cloud_folders where id not in (select id from hidden) limit $1`,
+        [MAX_LISTED],
+      );
+      files = await query<FileRow>(
+        `with recursive hidden as (select id from cloud_folders where trashed_at is not null union select f.id from cloud_folders f join hidden h on f.parent_id = h.id)
+         select id, folder_id, size_bytes, part_count, encrypted_meta, wrapped_key, favorite, created_at, updated_at, trashed_at from cloud_files
+          where status = 'ready' and trashed_at is null and (folder_id is null or folder_id not in (select id from hidden)) limit $1`,
+        [MAX_LISTED],
+      );
     } else if (input.view === 'trash') {
       folders = await query<FolderRow>(`select id, parent_id, encrypted_name, updated_at, trashed_at from cloud_folders where trashed_at is not null`);
       files = await query<FileRow>(`select id, folder_id, size_bytes, part_count, encrypted_meta, wrapped_key, favorite, created_at, updated_at, trashed_at from cloud_files where status = 'ready' and trashed_at is not null`);
@@ -132,6 +147,8 @@ export interface InitiateInput {
   sha256: unknown;
   encryptedMeta: unknown;
   wrappedKey: unknown;
+  /** The vault-key version the client wrapped `wrappedKey` under. */
+  keyVersion: unknown;
 }
 
 /**
@@ -154,14 +171,15 @@ export async function initiateUpload(session: SessionRecord, input: InitiateInpu
   await rateLimit(`cloud:upload:${session.user_id}`, 300, 600);
   return asUser(session.user_id, async () => {
     await requireActiveVaultDevice(session);
+    const v = await assertVaultKeyWritable(input.keyVersion);
     // Uploading into a folder races with deleting that folder (files cascade with it).
     if (folderId) await lockTree(session.user_id);
     await liveFolder(folderId);
     await reserve(session.user_id, size);
     const row = await one<{ id: string }>(
-      `insert into cloud_files (id, user_id, folder_id, status, size_bytes, part_count, sha256, encrypted_meta, wrapped_key, uploaded_by)
-       values ($1, $2, $3, 'uploading', $4, $5, $6, $7, $8, $9) on conflict (id) do nothing returning id`,
-      [fileId, session.user_id, folderId, size, partCount, Buffer.from(input.sha256 as string, 'hex'), meta, input.wrappedKey, session.device_id],
+      `insert into cloud_files (id, user_id, folder_id, status, size_bytes, part_count, sha256, encrypted_meta, wrapped_key, uploaded_by, key_version)
+       values ($1, $2, $3, 'uploading', $4, $5, $6, $7, $8, $9, $10) on conflict (id) do nothing returning id`,
+      [fileId, session.user_id, folderId, size, partCount, Buffer.from(input.sha256 as string, 'hex'), meta, input.wrappedKey, session.device_id, v.key_version],
     );
     if (!row) throw new UserFacingError('conflict', 'That file ID is already in use.', 409);
     void ctx;
@@ -296,7 +314,7 @@ export async function deleteFile(session: SessionRecord, fileIdRaw: string, ctx:
 
 // ---------------------------------------------------------------- folders
 
-export async function createFolder(session: SessionRecord, input: { id: unknown; parentId: unknown; encryptedName: unknown }) {
+export async function createFolder(session: SessionRecord, input: { id: unknown; parentId: unknown; encryptedName: unknown; keyVersion: unknown }) {
   assertCloudSession(session, 'write');
   const id = uuid(input.id, 'folder');
   const parentId = input.parentId == null ? null : uuid(input.parentId, 'folder');
@@ -304,13 +322,14 @@ export async function createFolder(session: SessionRecord, input: { id: unknown;
   await rateLimit(`cloud:folder:${session.user_id}`, 200, 600);
   return asUser(session.user_id, async () => {
     await requireActiveVaultDevice(session);
+    const v = await assertVaultKeyWritable(input.keyVersion);
     await lockTree(session.user_id);
     await liveFolder(parentId);
     const n = await one<{ n: string }>(`select count(*) as n from cloud_folders`);
     if (Number(n!.n) >= MAX_FOLDERS) throw new UserFacingError('limit', `You can have up to ${MAX_FOLDERS} folders during the preview.`, 409);
     const row = await one(
-      `insert into cloud_folders (id, user_id, parent_id, encrypted_name) values ($1, $2, $3, $4) on conflict (id) do nothing returning id`,
-      [id, session.user_id, parentId, name],
+      `insert into cloud_folders (id, user_id, parent_id, encrypted_name, key_version) values ($1, $2, $3, $4, $5) on conflict (id) do nothing returning id`,
+      [id, session.user_id, parentId, name, v.key_version],
     );
     if (!row) throw new UserFacingError('conflict', 'That folder ID is already in use.', 409);
     return { id };
@@ -320,7 +339,7 @@ export async function createFolder(session: SessionRecord, input: { id: unknown;
 export async function updateFolder(
   session: SessionRecord,
   idRaw: string,
-  input: { encryptedName?: unknown; parentId?: unknown; trashed?: unknown },
+  input: { encryptedName?: unknown; parentId?: unknown; trashed?: unknown; keyVersion?: unknown },
 ) {
   assertCloudSession(session, 'write');
   const id = uuid(idRaw, 'folder');
@@ -329,6 +348,7 @@ export async function updateFolder(
     await lockTree(session.user_id);
     if (!(await one(`select 1 from cloud_folders where id = $1 for update`, [id]))) throw notFound();
     if (input.encryptedName !== undefined) {
+      await assertVaultKeyWritable(input.keyVersion);
       await query(`update cloud_folders set encrypted_name = $2, updated_at = now() where id = $1`, [id, sealed(input.encryptedName, 1000)]);
     }
     if (input.parentId !== undefined) {

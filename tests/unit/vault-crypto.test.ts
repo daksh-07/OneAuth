@@ -157,3 +157,32 @@ describe('recovery key', () => {
     await expect(v.unwrapVaultKeyForRecovery(env, rk.bytes, OTHER_ID)).rejects.toThrow(v.VaultCryptoError);
   });
 });
+
+describe('key rotation primitives', () => {
+  it('re-wraps a file key to a new vault key without changing the file key', async () => {
+    const vk1 = v.generateVaultKey();
+    const vk2 = v.generateVaultKey();
+    const fk = await v.generateFileKey();
+    const fileId = crypto.randomUUID();
+    const object = await v.encryptFile(fk, fileId, new TextEncoder().encode('rotate me'));
+    const w1 = await v.wrapFileKey(vk1, fk);
+    const w2 = await v.rewrapFileKey(vk1, vk2, w1);
+    expect(w2).not.toBe(w1);
+    // The same content decrypts with the re-wrapped key…
+    expect(new TextDecoder().decode(await v.decryptFile(await v.unwrapFileKey(vk2, w2), fileId, object))).toBe('rotate me');
+    // …and the old vault key can't unwrap the new wrapping.
+    await expect(v.unwrapFileKey(vk1, w2)).rejects.toThrow(v.VaultCryptoError);
+    await expect(v.rewrapFileKey(v.generateVaultKey(), vk2, w1)).rejects.toThrow(v.VaultCryptoError);
+  });
+
+  it('derives independent name and Space keys per vault key', async () => {
+    const vk = v.generateVaultKey();
+    const id = crypto.randomUUID();
+    const space = await v.deriveSpaceKey(vk, VAULT_ID);
+    const names = await v.deriveNameKey(vk, VAULT_ID);
+    const sealed = await v.sealJson(space, 'space-item', id, { url: 'https://example.com' });
+    await expect(v.openJson(names, 'space-item', id, sealed)).rejects.toThrow(v.VaultCryptoError);
+    await expect(v.openJson(await v.deriveSpaceKey(v.generateVaultKey(), VAULT_ID), 'space-item', id, sealed)).rejects.toThrow(v.VaultCryptoError);
+    expect(await v.openJson(space, 'space-item', id, sealed)).toEqual({ url: 'https://example.com' });
+  });
+});

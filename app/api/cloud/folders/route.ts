@@ -5,5 +5,5 @@ import { createFolder } from '@/lib/server/cloud/items';
 export const POST = jsonRoute(async (req) => {
   const session = await requireSession('cloud:write');
   const b = await readJson<Record<string, unknown>>(req);
-  return createFolder(session, { id: b.id, parentId: b.parentId, encryptedName: b.encryptedName });
+  return createFolder(session, { id: b.id, parentId: b.parentId, encryptedName: b.encryptedName, keyVersion: b.keyVersion });
 });
