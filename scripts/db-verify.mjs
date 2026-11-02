@@ -4,9 +4,11 @@
 import pg from 'pg';
 import { appRolePassword, pgConfig } from './pg-config.mjs';
 
-const url = process.env.DATABASE_URL;
+// Administrative verification runs outside deployed functions. It can use a
+// migration-only connection while the application has only its restricted URL.
+const url = process.env.MIGRATION_DATABASE_URL || process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL;
 if (!url) {
-  console.error('[db-verify] DATABASE_URL is not set');
+  console.error('[db-verify] migration database connection is not set');
   process.exit(1);
 }
 
@@ -80,12 +82,16 @@ try {
 }
 
 // Prove the runtime credentials work and are confined: no tenant => no rows.
-const appPassword = appRolePassword(url);
-if (appPassword) {
-  const appUrl = new URL(url);
-  appUrl.username = 'oneauth_app';
-  appUrl.password = appPassword;
-  const appClient = new pg.Client(pgConfig(appUrl.toString()));
+const appPassword = appRolePassword(process.env.DATABASE_URL || url);
+let runtimeUrl = process.env.ONEAUTH_RUNTIME_DATABASE_URL;
+if (!runtimeUrl && appPassword) {
+  const derivedUrl = new URL(process.env.DATABASE_URL || url);
+  derivedUrl.username = 'oneauth_app';
+  derivedUrl.password = appPassword;
+  runtimeUrl = derivedUrl.toString();
+}
+if (runtimeUrl) {
+  const appClient = new pg.Client(pgConfig(runtimeUrl));
   await appClient.connect();
   try {
     const [r] = (await appClient.query(`select current_user as role, (select count(*)::int from users) as visible_users,
@@ -96,7 +102,7 @@ if (appPassword) {
     await appClient.end();
   }
 } else {
-  console.log('[db-verify] no app-role password configured: runtime will connect as the owner');
+  problems.push('restricted runtime database connection is not configured');
 }
 if (problems.length) {
   console.error(`[db-verify] FAILED: ${problems.join('; ')}`);
