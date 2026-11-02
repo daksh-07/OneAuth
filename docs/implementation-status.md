@@ -16,7 +16,7 @@ _Last updated: 2 November 2026 (Phase 2D internal security review)._
 
 | Branch | Head | Purpose | PR |
 | --- | --- | --- | --- |
-| `claude/oneauth-foundation-gaqvr7` | `dcf9f64` at this review | Phase 1 identity foundation | #1 (open, not merged) |
+| `claude/oneauth-foundation-gaqvr7` | `fccc9fcf54a6482cb36e354b32d9153cb0c6b147` (rechecked 2 Nov) | Phase 1 identity foundation | #1 (open, not merged) |
 | `claude/oneauth-cloud-foundation` | `abd324d` at this review | Cloud developer preview, Space foundation, API and native docs | #2 (open, not merged) |
 | `security/phase-2d` | see security PR | Internal hardening and external-review package, based on `abd324d` | Draft, not merged |
 
@@ -96,8 +96,8 @@ _Last updated: 2 November 2026 (Phase 2D internal security review)._
 2. Browser-delivered E2EE trusts the served JavaScript; there's no code transparency yet.
 3. The 60-bit security code relies on a person actually comparing it; this is a review item.
 4. Existing contents stay readable to a removed browser that kept keys until the user runs deep rotation (offered after a key replacement, not automatic).
-6. A removed browser colluding with the server can forge the transition proof for the step it knew. Confirmation codes rely on the user comparing them. Clearing site data resets a browser's pins.
-5. Preview and production share one Vercel project. Preview deployments share one preview database, and migrations `0004` and `0005` are additive, so PR #1's preview keeps working.
+5. A removed browser colluding with the server can forge the transition proof for the step it knew. Confirmation codes rely on the user comparing them. Clearing site data resets a browser's pins.
+6. Preview and production share one Vercel project. Preview deployments share one preview database, and migrations `0004` and `0005` are additive, so PR #1's preview keeps working.
 
 ## Next actions
 
