@@ -16,6 +16,7 @@ import { useToast } from '@/components/ui/toast';
 import { ApiError } from '@/lib/client/api';
 import { cn } from '@/lib/cn';
 import * as cloud from '@/lib/vault/client';
+import { SpaceItems, type UnlockedVault } from './space-items';
 
 const ACCENT: Record<cloud.Space['accent'], string> = {
   blue: 'bg-blue-500',
@@ -35,6 +36,8 @@ export function SpaceApp({ userId, deviceId, cloudEnabled }: { userId: string; d
   const [data, setData] = useState<Data | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<'new' | 'settings' | null>(null);
+  const [vault, setVault] = useState<UnlockedVault | null | undefined>(cloudEnabled ? undefined : null);
+  const [tick, setTick] = useState(0);
 
   const load = useCallback(async () => {
     try {
@@ -49,8 +52,31 @@ export function SpaceApp({ userId, deviceId, cloudEnabled }: { userId: string; d
     return () => clearTimeout(t);
   }, [load]);
 
+  // Unlock once per visit, only if this browser is already approved for the vault (never registers anything).
+  useEffect(() => {
+    if (!cloudEnabled) return;
+    void cloud.tryUnlock(userId).then(setVault);
+  }, [cloudEnabled, userId]);
+
+  // Sync with the account's other browsers: refresh every 20 seconds while visible, and on return to the tab.
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState !== 'visible') return;
+      void load();
+      setTick((t) => t + 1);
+    };
+    const t = setInterval(refresh, 20_000);
+    document.addEventListener('visibilitychange', refresh);
+    window.addEventListener('focus', refresh);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener('visibilitychange', refresh);
+      window.removeEventListener('focus', refresh);
+    };
+  }, [load]);
+
   if (error) return <Notice tone="danger" title="Couldn’t load your spaces">{error}</Notice>;
-  if (!data) return <Skeleton className="h-48 w-full" />;
+  if (!data || vault === undefined) return <Skeleton className="h-48 w-full" />;
   const current = data.spaces.find((s) => s.id === data.selectedId) ?? data.spaces[0];
 
   async function choose(id: string) {
@@ -120,7 +146,8 @@ export function SpaceApp({ userId, deviceId, cloudEnabled }: { userId: string; d
         </p>
       ) : null}
 
-      <Pins key={current.id} space={current} userId={userId} cloudEnabled={cloudEnabled} />
+      <SpaceItems key={`items-${current.id}`} space={current} vault={vault} cloudEnabled={cloudEnabled} tick={tick} />
+      <Pins key={current.id} space={current} vault={vault} cloudEnabled={cloudEnabled} tick={tick} />
 
       <NewSpaceDialog
         key={dialog === 'new' ? 'new-open' : 'new-closed'}
@@ -151,17 +178,16 @@ export function SpaceApp({ userId, deviceId, cloudEnabled }: { userId: string; d
 
 type PinData = Awaited<ReturnType<typeof cloud.listPins>>;
 
-function Pins({ space, userId, cloudEnabled }: { space: cloud.Space; userId: string; cloudEnabled: boolean }) {
+function Pins({ space, vault: v, cloudEnabled, tick }: { space: cloud.Space; vault: UnlockedVault | null; cloudEnabled: boolean; tick: number }) {
   const toast = useToast();
   const [pins, setPins] = useState<PinData | null>(null);
   const [names, setNames] = useState<Record<string, string>>({});
-  const [vault, setVault] = useState<{ vaultKey: Uint8Array; vaultId: string } | null | undefined>(undefined);
+  const vault = v;
 
   const load = useCallback(async () => {
-    const [p, v] = await Promise.all([cloud.listPins(space.id), cloudEnabled ? cloud.tryUnlock(userId) : Promise.resolve(null)]);
+    const p = await cloud.listPins(space.id);
     setPins(p);
-    setVault(v);
-    if (v) {
+    if (v && !p.locked) {
       const nk = await cloud.nameKeyFor(v.vaultKey, v.vaultId);
       const entries = await Promise.all([
         ...p.files.map(async (f) => [f.id, (await cloud.openMeta(v.vaultKey, f).catch(() => null))?.name ?? 'Unreadable file'] as const),
@@ -169,11 +195,11 @@ function Pins({ space, userId, cloudEnabled }: { space: cloud.Space; userId: str
       ]);
       setNames(Object.fromEntries(entries));
     }
-  }, [space.id, cloudEnabled, userId]);
+  }, [space.id, v]);
   useEffect(() => {
     const t = setTimeout(() => void load().catch((e) => toast({ tone: 'error', message: errMsg(e) })), 0);
     return () => clearTimeout(t);
-  }, [load, toast]);
+  }, [load, toast, tick]);
 
   async function open(f: PinData['files'][number]) {
     if (!vault) return;
@@ -199,12 +225,12 @@ function Pins({ space, userId, cloudEnabled }: { space: cloud.Space; userId: str
     }
   }
 
-  const count = (pins?.files.length ?? 0) + (pins?.folders.length ?? 0);
+  const count = pins?.locked ? pins.lockedCount : (pins?.files.length ?? 0) + (pins?.folders.length ?? 0);
 
   return (
     <Panel>
       <PanelHeader title="Pinned" description="Files and folders from Cloud that you want close at hand in this space." />
-      {pins === null || vault === undefined ? (
+      {pins === null ? (
         <div className="p-5">
           <Skeleton className="h-6 w-1/2" />
         </div>
@@ -224,9 +250,9 @@ function Pins({ space, userId, cloudEnabled }: { space: cloud.Space; userId: str
         </EmptyState>
       ) : (
         <>
-          {!vault ? (
-            <Notice tone="info" title="Names are encrypted" className="m-4">
-              Open Cloud on this browser to unlock your vault and see what’s pinned here.
+          {pins.locked || !vault ? (
+            <Notice tone="info" title={`${count} pinned ${count === 1 ? 'item is' : 'items are'} encrypted`} className="m-4">
+              Approve this browser in Cloud to see and open what’s pinned here.
             </Notice>
           ) : null}
           <ul className="divide-y divide-line" data-testid="space-pins">
@@ -341,6 +367,8 @@ function SettingsDialog(props: {
   const [accent, setAccent] = useState(space.accent);
   const [allDevices, setAllDevices] = useState(space.all_devices);
   const [chosen, setChosen] = useState<string[]>(space.all_devices ? [deviceId] : space.device_ids);
+  const [cloudSort, setCloudSort] = useState(space.prefs?.cloudSort ?? 'name');
+  const [linksInNewTab, setLinksInNewTab] = useState(space.prefs?.linksInNewTab ?? true);
   const [busy, setBusy] = useState<'save' | 'delete' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const hidesHere = !allDevices && !chosen.includes(deviceId);
@@ -350,7 +378,7 @@ function SettingsDialog(props: {
     setBusy('save');
     setError(null);
     try {
-      await cloud.updateSpace(space.id, { name, kind, accent, allDevices, ...(allDevices ? {} : { deviceIds: chosen }) });
+      await cloud.updateSpace(space.id, { name, kind, accent, allDevices, prefs: { cloudSort, linksInNewTab }, ...(allDevices ? {} : { deviceIds: chosen }) });
       await props.onDone('Space updated');
     } catch (err) {
       setError(errMsg(err));
@@ -425,6 +453,26 @@ function SettingsDialog(props: {
             {hidesHere ? (
               <p className="mt-2 text-[13px] text-warning">This space will disappear from this device when you save.</p>
             ) : null}
+          </fieldset>
+          <fieldset>
+            <legend className="text-sm font-medium">Preferences</legend>
+            <label htmlFor="pref-sort" className="mt-2 block text-[13px] text-muted">
+              Sort Cloud files by
+            </label>
+            <select
+              id="pref-sort"
+              className="mt-1 h-10 w-full rounded-control border border-line bg-surface px-3 text-sm"
+              value={cloudSort}
+              onChange={(e) => setCloudSort(e.target.value as 'name' | 'updated' | 'size')}
+            >
+              <option value="name">Name</option>
+              <option value="updated">Last changed</option>
+              <option value="size">Size</option>
+            </select>
+            <label className="mt-3 flex items-center gap-3 text-sm">
+              <input type="checkbox" className="size-4" checked={linksInNewTab} onChange={(e) => setLinksInNewTab(e.target.checked)} />
+              Open shortcuts and bookmarks in a new tab
+            </label>
           </fieldset>
           {error ? <p className="text-[13px] text-danger">{error}</p> : null}
           <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between">

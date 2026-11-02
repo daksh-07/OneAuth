@@ -25,6 +25,7 @@ export interface VaultDevice {
 }
 export interface VaultState {
   vault: { id: string; key_version: number; created_at: string } | null;
+  rotation: { id: string; to_version: number; reason: string; started_at: string } | null;
   device: { id: string; status: 'pending' | 'active'; fingerprint: string; envelope: string | null } | null;
   devices: VaultDevice[];
   usage: { used: number; reserved: number; quota: number };
@@ -127,9 +128,9 @@ export function unlock(state: VaultState, privateKey: CryptoKey): Promise<Uint8A
  * the server returned, so the user compares what this browser will actually
  * encrypt to, not what the server claims.
  */
-export async function approveDevice(device: VaultDevice, vaultKey: Uint8Array) {
+export async function approveDevice(device: VaultDevice, vaultKey: Uint8Array, keyVersion: number) {
   const fingerprint = await v.deviceFingerprint(device.public_jwk);
-  return postJson(`/api/cloud/vault/devices/${device.id}`, { envelope: await v.wrapVaultKeyForDevice(vaultKey, device.public_jwk), fingerprint });
+  return postJson(`/api/cloud/vault/devices/${device.id}`, { envelope: await v.wrapVaultKeyForDevice(vaultKey, device.public_jwk), fingerprint, keyVersion });
 }
 
 /**
@@ -159,7 +160,7 @@ export async function recoverWithKey(typed: string, jwk: v.PublicDeviceJwk): Pro
 
 // ---------------------------------------------------------------- files
 
-export function listItems(view: 'folder' | 'recent' | 'favorites' | 'trash', folderId: string | null) {
+export function listItems(view: 'folder' | 'recent' | 'favorites' | 'trash' | 'all', folderId: string | null) {
   const q = new URLSearchParams({ view, ...(folderId ? { folder: folderId } : {}) });
   return request<{ folders: FolderRow[]; files: FileRow[]; path: FolderRow[] }>('GET', `/api/cloud/items?${q}`);
 }
@@ -186,7 +187,7 @@ export type Progress = (fraction: number, phase: 'encrypting' | 'uploading' | 'd
  * Encrypts in the browser, then uploads ciphertext in 1 MiB parts. If anything
  * fails, the unfinished upload is cancelled so its quota reservation is released.
  */
-export async function uploadFile(vaultKey: Uint8Array, file: File, folderId: string | null, onProgress: Progress = () => {}) {
+export async function uploadFile(vaultKey: Uint8Array, keyVersion: number, file: File, folderId: string | null, onProgress: Progress = () => {}) {
   if (file.size > MAX_FILE_BYTES) throw new ApiError('too_large', `${file.name} is larger than the 25 MB preview limit.`, 413);
   const fileId = crypto.randomUUID();
   const fk = await v.generateFileKey();
@@ -200,6 +201,7 @@ export async function uploadFile(vaultKey: Uint8Array, file: File, folderId: str
     sha256: Array.from(await v.sha256(object), (b) => b.toString(16).padStart(2, '0')).join(''),
     encryptedMeta: await v.sealJson(fk, 'meta', fileId, meta),
     wrappedKey: await v.wrapFileKey(vaultKey, fk),
+    keyVersion,
   });
   try {
     for (let i = 0; i < partCount; i++) {
@@ -260,13 +262,13 @@ export const updateFile = (id: string, patch: { favorite?: boolean; trashed?: bo
   request('PATCH', `/api/cloud/files/${id}`, patch);
 export const deleteFile = (id: string) => request('DELETE', `/api/cloud/files/${id}`);
 
-export async function createFolder(nameKey: CryptoKey, parentId: string | null, name: string) {
+export async function createFolder(nameKey: CryptoKey, keyVersion: number, parentId: string | null, name: string) {
   const id = crypto.randomUUID();
-  await postJson('/api/cloud/folders', { id, parentId, encryptedName: await v.sealJson(nameKey, 'folder', id, { name }) });
+  await postJson('/api/cloud/folders', { id, parentId, encryptedName: await v.sealJson(nameKey, 'folder', id, { name }), keyVersion });
   return id;
 }
-export async function renameFolder(nameKey: CryptoKey, id: string, name: string) {
-  return request('PATCH', `/api/cloud/folders/${id}`, { encryptedName: await v.sealJson(nameKey, 'folder', id, { name }) });
+export async function renameFolder(nameKey: CryptoKey, keyVersion: number, id: string, name: string) {
+  return request('PATCH', `/api/cloud/folders/${id}`, { encryptedName: await v.sealJson(nameKey, 'folder', id, { name }), keyVersion });
 }
 export const updateFolder = (id: string, patch: { trashed?: boolean; parentId?: string | null }) => request('PATCH', `/api/cloud/folders/${id}`, patch);
 export const deleteFolder = (id: string) => request('DELETE', `/api/cloud/folders/${id}`);
@@ -287,13 +289,13 @@ export function formatBytes(n: number): string {
  * Unlocks the vault on this browser if it's already an approved vault device.
  * Never registers or creates anything: returns null when Cloud isn't set up here.
  */
-export async function tryUnlock(userId: string): Promise<{ vaultKey: Uint8Array; vaultId: string } | null> {
+export async function tryUnlock(userId: string): Promise<{ vaultKey: Uint8Array; vaultId: string; keyVersion: number } | null> {
   try {
     const keys = await loadDeviceKeys(userId);
     if (!keys) return null;
     const s = await getState();
     if (!s.vault || s.device?.status !== 'active') return null;
-    return { vaultKey: await unlock(s, keys.privateKey), vaultId: s.vault.id };
+    return { vaultKey: await unlock(s, keys.privateKey), vaultId: s.vault.id, keyVersion: s.vault.key_version };
   } catch {
     return null;
   }
@@ -308,6 +310,7 @@ export interface Space {
   accent: 'blue' | 'green' | 'amber' | 'rose' | 'violet' | 'slate';
   all_devices: boolean;
   device_ids: string[];
+  prefs: { cloudSort?: 'name' | 'updated' | 'size'; linksInNewTab?: boolean };
 }
 export const listSpaces = () =>
   request<{ spaces: Space[]; selectedId: string | null; devices: { id: string; name: string }[] }>('GET', '/api/space');
@@ -316,6 +319,89 @@ export const createSpace = (name: string, kind: Space['kind']) => request<{ id: 
 export const updateSpace = (id: string, patch: Record<string, unknown>) => request('PATCH', `/api/space/${id}`, patch);
 export const deleteSpace = (id: string) => request('DELETE', `/api/space/${id}`);
 export const listPins = (id: string) =>
-  request<{ files: (FileRow & { pin_id: string })[]; folders: (FolderRow & { pin_id: string })[] }>('GET', `/api/space/${id}/pins`);
+  request<{ files: (FileRow & { pin_id: string })[]; folders: (FolderRow & { pin_id: string })[]; locked: boolean; lockedCount: number }>('GET', `/api/space/${id}/pins`);
 export const pinToSpace = (spaceId: string, item: { fileId?: string; folderId?: string }) => request('POST', `/api/space/${spaceId}/pins`, item);
 export const unpinFromSpace = (spaceId: string, pinId: string) => request('DELETE', `/api/space/${spaceId}/pins/${pinId}`);
+
+// ---------------------------------------------------------------- vault-key rotation (docs/cloud/key-rotation.md)
+
+export { prepareRotation, type PreparedRotation } from './rotate';
+
+type RotationProgress = (p: { done: number; total: number }) => void;
+
+/** Starts a rotation: the new key goes to every active browser, and the recovery key is replaced. */
+export async function startRotation(prepared: import('./rotate').PreparedRotation, state: VaultState, reason: 'device_removed' | 'manual') {
+  const { startPayload } = await import('./rotate');
+  const active = state.devices.filter((d) => d.status === 'active');
+  const body = await startPayload(prepared, state.vault!.id, active);
+  return postJson<{ rotationId: string; toVersion: number }>('/api/cloud/vault/rotation', { reason, keyVersion: state.vault!.key_version, ...body });
+}
+
+/** Re-wraps everything still outstanding, then commits. Safe to call again after an interruption. */
+export async function finishRotation(oldKey: Uint8Array, newKey: Uint8Array, vaultId: string, rotationId: string, onProgress: RotationProgress = () => {}) {
+  const { rewrapBatch } = await import('./rotate');
+  let done = 0;
+  for (let round = 0; round < 10_000; round++) {
+    const work = await request<import('./rotate').RotationWork & { rotationId: string; remaining: Record<string, number> }>('GET', '/api/cloud/vault/rotation/work');
+    const left = work.remaining.files + work.remaining.folders + work.remaining.items;
+    onProgress({ done, total: done + left });
+    if (!work.files.length && !work.folders.length && !work.items.length) break;
+    const batch = await rewrapBatch(work, oldKey, newKey, vaultId);
+    await postJson('/api/cloud/vault/rotation/batch', { rotationId, ...batch });
+    done += batch.files.length + batch.folders.length + batch.items.length;
+  }
+  await postJson('/api/cloud/vault/rotation/commit', { rotationId });
+}
+
+/** For resuming: this browser's copy of the new key, wrapped to its own device key at the start. */
+export async function rotationNextKey(privateKey: CryptoKey) {
+  const s = await request<{ rotation: { id: string; nextEnvelope: string | null } | null }>('GET', '/api/cloud/vault/rotation');
+  if (!s.rotation?.nextEnvelope) return null;
+  return { rotationId: s.rotation.id, newKey: await v.unwrapVaultKeyForDevice(s.rotation.nextEnvelope, privateKey) };
+}
+
+export const abortRotation = (rotationId: string) => request('DELETE', '/api/cloud/vault/rotation', { rotationId });
+
+// ---------------------------------------------------------------- encrypted Space items
+
+export interface BookmarkBody {
+  title: string;
+  url: string;
+  note?: string;
+}
+export interface ShortcutBody {
+  label: string;
+  url: string;
+}
+export interface SpaceItemRow {
+  id: string;
+  kind: 'bookmark' | 'shortcut';
+  encrypted_body: string;
+  position: number;
+  version: number;
+  updated_at: string;
+}
+
+export const spaceKeyFor = (vaultKey: Uint8Array, vaultId: string) => v.deriveSpaceKey(vaultKey, vaultId);
+
+export const listSpaceItems = (spaceId: string) =>
+  request<{ items: SpaceItemRow[]; locked: boolean; lockedCount: number }>('GET', `/api/space/${spaceId}/items`);
+
+export async function openSpaceItem<T extends BookmarkBody | ShortcutBody>(spaceKey: CryptoKey, row: SpaceItemRow): Promise<T> {
+  return v.openJson<T>(spaceKey, 'space-item', row.id, row.encrypted_body);
+}
+
+export async function createSpaceItem(spaceKey: CryptoKey, keyVersion: number, spaceId: string, kind: 'bookmark' | 'shortcut', body: BookmarkBody | ShortcutBody) {
+  const id = crypto.randomUUID();
+  return request('POST', `/api/space/${spaceId}/items`, { id, kind, keyVersion, encryptedBody: await v.sealJson(spaceKey, 'space-item', id, body) });
+}
+
+export async function updateSpaceItem(spaceKey: CryptoKey, keyVersion: number, spaceId: string, row: SpaceItemRow, body: BookmarkBody | ShortcutBody) {
+  return request('PATCH', `/api/space/${spaceId}/items/${row.id}`, {
+    version: row.version,
+    keyVersion,
+    encryptedBody: await v.sealJson(spaceKey, 'space-item', row.id, body),
+  });
+}
+
+export const deleteSpaceItem = (spaceId: string, itemId: string) => request('DELETE', `/api/space/${spaceId}/items/${itemId}`);

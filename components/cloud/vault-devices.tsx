@@ -1,18 +1,39 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { KeyRound, ShieldAlert } from 'lucide-react';
+import { KeyRound, LogOut, RefreshCw, ShieldAlert } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { DialogContent, DialogRoot } from '@/components/ui/dialog';
 import { Notice } from '@/components/ui/notice';
 import { Panel, PanelHeader } from '@/components/ui/panel';
+import { RelativeTime } from '@/components/ui/time';
 import { useToast } from '@/components/ui/toast';
 import { isCancellation, passkeyErrorMessage, withStepUp } from '@/lib/client/api';
 import * as cloud from '@/lib/vault/client';
 
-/** Browsers with access to the vault, and requests waiting for approval. */
-export function VaultDevices({ devices, vaultKey, onChange }: { devices: cloud.VaultDevice[]; vaultKey: Uint8Array; onChange: () => void }) {
+/** Browsers with access to the vault, requests waiting for approval, and key replacement. */
+export function VaultDevices({
+  userId,
+  devices,
+  vaultKey,
+  keyVersion,
+  rotating,
+  onChange,
+  onRemoved,
+  onForgotten,
+  onReplaceKey,
+}: {
+  userId: string;
+  devices: cloud.VaultDevice[];
+  vaultKey: Uint8Array;
+  keyVersion: number;
+  rotating: boolean;
+  onChange: () => void;
+  onRemoved: (name: string) => void;
+  onForgotten: () => void;
+  onReplaceKey: () => void;
+}) {
   const [approving, setApproving] = useState<cloud.VaultDevice | null>(null);
   const [removing, setRemoving] = useState<cloud.VaultDevice | null>(null);
   const pending = devices.filter((d) => d.status === 'pending');
@@ -22,54 +43,97 @@ export function VaultDevices({ devices, vaultKey, onChange }: { devices: cloud.V
     <>
       {pending.length ? (
         <Panel className="border-warning/40">
-          <PanelHeader title="Waiting for approval" description="Approve only browsers you’re setting up yourself." />
+          <PanelHeader title="Waiting for approval" description="Approve only browsers you’re setting up yourself, right now." />
           <ul className="divide-y divide-line">
             {pending.map((d) => (
               <li key={d.id} className="flex items-center justify-between gap-3 px-5 py-3">
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium">{d.device_name}</p>
-                  <p className="text-[13px] text-muted">Asked to access your encrypted files</p>
+                  <p className="text-[13px] text-muted">
+                    Asked <RelativeTime value={d.created_at} />
+                  </p>
                 </div>
-                <Button size="sm" onClick={() => setApproving(d)}>
+                <Button size="sm" onClick={() => setApproving(d)} disabled={rotating}>
                   Review
                 </Button>
               </li>
             ))}
           </ul>
+          {rotating ? <p className="px-5 pb-4 text-[12px] text-muted">Approvals resume once the key replacement finishes.</p> : null}
         </Panel>
       ) : null}
 
       <Panel>
-        <PanelHeader title="Browsers with access" description="Each has its own key to your vault." />
+        <PanelHeader
+          title="Browsers with access"
+          description="Each has its own key to your vault."
+          action={
+            <Button size="sm" variant="ghost" onClick={onReplaceKey} disabled={rotating}>
+              <RefreshCw />
+              Replace key
+            </Button>
+          }
+        />
         <ul className="divide-y divide-line">
           {active.map((d) => (
             <li key={d.id} className="flex items-center justify-between gap-3 px-5 py-3">
               <div className="flex min-w-0 items-center gap-3">
                 <KeyRound className="size-4 shrink-0 text-muted" aria-hidden="true" />
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-medium">{d.device_name}</p>
+                  <p className="flex items-center gap-2 truncate text-sm font-medium">
+                    {d.device_name}
+                    {d.is_current ? <Badge tone="accent">This browser</Badge> : null}
+                  </p>
                   <p className="font-mono text-[12px] text-muted">{d.fingerprint}</p>
                 </div>
               </div>
-              {d.is_current ? (
-                <Badge tone="accent">This browser</Badge>
-              ) : (
-                <Button size="sm" variant="ghost" className="text-danger" onClick={() => setRemoving(d)}>
-                  Remove
-                </Button>
-              )}
+              <Button size="sm" variant="ghost" className="text-danger" onClick={() => setRemoving(d)}>
+                {d.is_current ? (
+                  <>
+                    <LogOut />
+                    Remove
+                  </>
+                ) : (
+                  'Remove'
+                )}
+              </Button>
             </li>
           ))}
         </ul>
       </Panel>
 
-      <ApproveDialog key={approving?.id ?? 'none'} device={approving} vaultKey={vaultKey} onClose={() => setApproving(null)} onDone={onChange} />
-      <RemoveDialog key={removing?.id ?? 'none'} device={removing} onClose={() => setRemoving(null)} onDone={onChange} />
+      <ApproveDialog
+        key={approving?.id ?? 'none'}
+        device={approving}
+        vaultKey={vaultKey}
+        keyVersion={keyVersion}
+        onClose={() => setApproving(null)}
+        onDone={onChange}
+      />
+      <RemoveDialog
+        key={removing?.id ?? 'none'}
+        device={removing}
+        userId={userId}
+        onClose={() => setRemoving(null)}
+        onDone={(d) => (d.is_current ? onForgotten() : onRemoved(d.device_name))}
+      />
     </>
   );
 }
 
-function ApproveDialog({ device, vaultKey, onClose, onDone }: { device: cloud.VaultDevice | null; vaultKey: Uint8Array; onClose: () => void; onDone: () => void }) {
+function ApproveDialog({
+  device,
+  vaultKey,
+  keyVersion,
+  onClose,
+  onDone,
+}: {
+  device: cloud.VaultDevice | null;
+  vaultKey: Uint8Array;
+  keyVersion: number;
+  onClose: () => void;
+  onDone: () => void;
+}) {
   const toast = useToast();
   const [code, setCode] = useState<string | null>(null);
   const [busy, setBusy] = useState<'approve' | 'deny' | null>(null);
@@ -85,7 +149,7 @@ function ApproveDialog({ device, vaultKey, onClose, onDone }: { device: cloud.Va
     setBusy(kind);
     setError(null);
     try {
-      if (kind === 'approve') await withStepUp(() => cloud.approveDevice(device, vaultKey));
+      if (kind === 'approve') await withStepUp(() => cloud.approveDevice(device, vaultKey, keyVersion));
       else await withStepUp(() => cloud.revokeVaultDevice(device.id));
       toast({ tone: 'success', message: kind === 'approve' ? `${device.device_name} can now open your files` : 'Request declined' });
       onClose();
@@ -100,13 +164,16 @@ function ApproveDialog({ device, vaultKey, onClose, onDone }: { device: cloud.Va
   return (
     <DialogRoot open={device !== null} onOpenChange={(o) => !o && onClose()}>
       <DialogContent title="Approve this browser?" description={device ? `${device.device_name} is asking to open your encrypted files.` : undefined}>
-        <p className="text-[13px] font-medium text-muted">Its security code should be</p>
-        <p className="mt-1 font-mono text-3xl font-semibold tracking-[0.2em]" data-testid="approve-fingerprint">
+        <ol className="space-y-2 text-[13px] leading-relaxed text-muted">
+          <li>1. Look at the other screen. It shows a security code.</li>
+          <li>2. Check it matches this code exactly, all 12 characters.</li>
+        </ol>
+        <p className="mt-4 text-[13px] font-medium text-muted">Its security code should be</p>
+        <p className="mt-1 font-mono text-2xl font-semibold tracking-[0.15em] sm:text-3xl" data-testid="approve-fingerprint">
           {code ?? '…'}
         </p>
-        <Notice tone="warning" title="Compare the codes before approving" className="mt-4">
-          Check that the code on the other screen is exactly the same. If it’s different, or you didn’t start this, decline. It may not be your
-          device.
+        <Notice tone="warning" title="If the codes differ, decline" className="mt-4">
+          A different code means this request may not come from your device, even if the name looks right. Approving gives it your vault key.
         </Notice>
         {error ? (
           <Notice tone="danger" title="That didn’t work" className="mt-4">
@@ -126,20 +193,32 @@ function ApproveDialog({ device, vaultKey, onClose, onDone }: { device: cloud.Va
   );
 }
 
-function RemoveDialog({ device, onClose, onDone }: { device: cloud.VaultDevice | null; onClose: () => void; onDone: () => void }) {
+function RemoveDialog({
+  device,
+  userId,
+  onClose,
+  onDone,
+}: {
+  device: cloud.VaultDevice | null;
+  userId: string;
+  onClose: () => void;
+  onDone: (d: cloud.VaultDevice) => void;
+}) {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const self = device?.is_current ?? false;
 
   async function remove() {
     if (!device) return;
     setBusy(true);
     setError(null);
     try {
-      await withStepUp(() => cloud.revokeVaultDevice(device.id));
-      toast({ tone: 'success', message: `${device.device_name} can no longer open your files` });
+      if (self) await withStepUp(() => cloud.forgetThisBrowser(userId, device.id));
+      else await withStepUp(() => cloud.revokeVaultDevice(device.id));
+      toast({ tone: 'success', message: self ? 'This browser’s vault key was deleted' : `${device.device_name} can no longer open your files` });
       onClose();
-      onDone();
+      onDone(device);
     } catch (err) {
       if (!isCancellation(err)) setError(passkeyErrorMessage(err));
     } finally {
@@ -149,13 +228,25 @@ function RemoveDialog({ device, onClose, onDone }: { device: cloud.VaultDevice |
 
   return (
     <DialogRoot open={device !== null} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent title="Remove vault access?" description={device ? `${device.device_name} will no longer be able to download or decrypt your files.` : undefined}>
-        <Notice tone="info" title="What this can’t undo">
-          <span className="flex gap-2">
-            <ShieldAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-            Files that browser already downloaded stay on it. If you think it’s compromised, also disconnect it in Devices.
-          </span>
-        </Notice>
+      <DialogContent
+        title={self ? 'Remove this browser?' : 'Remove vault access?'}
+        description={
+          self
+            ? 'This browser’s vault key is deleted and its access withdrawn, for example before you hand the computer on. To use Cloud here again, approve it from another browser or use your recovery key.'
+            : device
+              ? `${device.device_name} will no longer be able to download or decrypt your files.`
+              : undefined
+        }
+      >
+        {!self ? (
+          <Notice tone="info" title="What this can’t undo">
+            <span className="flex gap-2">
+              <ShieldAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+              Files that browser already downloaded stay on it. If you think it’s compromised, also disconnect it in Devices and replace your vault
+              key afterwards.
+            </span>
+          </Notice>
+        ) : null}
         {error ? (
           <Notice tone="danger" title="That didn’t work" className="mt-4">
             {error}
@@ -166,7 +257,7 @@ function RemoveDialog({ device, onClose, onDone }: { device: cloud.VaultDevice |
             Cancel
           </Button>
           <Button variant="danger" onClick={remove} loading={busy}>
-            Remove access
+            {self ? 'Remove this browser' : 'Remove access'}
           </Button>
         </div>
       </DialogContent>
