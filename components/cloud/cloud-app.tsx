@@ -21,7 +21,7 @@ type Phase =
   | { kind: 'removed' }
   | { kind: 'ready'; vaultKey: Uint8Array };
 
-export function CloudApp({ userId }: { userId: string }) {
+export function CloudApp({ userId, initialFolder = null }: { userId: string; initialFolder?: string | null }) {
   const [phase, setPhase] = useState<Phase>({ kind: 'loading' });
   const [state, setState] = useState<cloud.VaultState | null>(null);
   const [device, setDevice] = useState<{ keys: CryptoKeyPair; jwk: PublicDeviceJwk } | null>(null);
@@ -128,7 +128,7 @@ export function CloudApp({ userId }: { userId: string }) {
         <DevicePending fingerprint={phase.fingerprint} jwk={device.jwk} onUnlocked={() => void sync()} />
       ) : phase.kind === 'ready' && state?.vault ? (
         <div className="space-y-6">
-          <FileBrowser vaultKey={phase.vaultKey} vaultId={state.vault.id} usage={state.usage} onUsageChange={() => void sync()} />
+          <FileBrowser initialFolder={initialFolder} vaultKey={phase.vaultKey} vaultId={state.vault.id} usage={state.usage} onUsageChange={() => void sync()} />
           <div className="grid gap-6 lg:ml-[224px] lg:grid-cols-2">
             <VaultDevices devices={state.devices} vaultKey={phase.vaultKey} onChange={() => void sync()} />
           </div>

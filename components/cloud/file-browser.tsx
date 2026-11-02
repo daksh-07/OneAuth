@@ -12,6 +12,7 @@ import {
   HardDrive,
   MoreHorizontal,
   Pencil,
+  Pin,
   RotateCcw,
   Star,
   Trash2,
@@ -59,10 +60,23 @@ const VIEWS: { id: View; label: string; icon: typeof HardDrive }[] = [
 
 const errMsg = (e: unknown) => (e instanceof ApiError ? e.message : 'Something went wrong. Please try again.');
 
-export function FileBrowser({ vaultKey, vaultId, usage, onUsageChange }: { vaultKey: Uint8Array; vaultId: string; usage: cloud.VaultState['usage']; onUsageChange: () => void }) {
+export function FileBrowser({
+  vaultKey,
+  vaultId,
+  usage,
+  onUsageChange,
+  initialFolder = null,
+}: {
+  vaultKey: Uint8Array;
+  vaultId: string;
+  usage: cloud.VaultState['usage'];
+  onUsageChange: () => void;
+  initialFolder?: string | null;
+}) {
   const toast = useToast();
   const [view, setView] = useState<View>('folder');
-  const [folderId, setFolderId] = useState<string | null>(null);
+  const [folderId, setFolderId] = useState<string | null>(initialFolder);
+  const [space, setSpace] = useState<{ id: string; name: string } | null>(null);
   const [items, setItems] = useState<Item[] | null>(null);
   const [path, setPath] = useState<{ id: string; name: string }[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -74,6 +88,17 @@ export function FileBrowser({ vaultKey, vaultId, usage, onUsageChange }: { vault
   useEffect(() => {
     void cloud.nameKeyFor(vaultKey, vaultId).then(setNameKey);
   }, [vaultKey, vaultId]);
+
+  // The space this device has open, for "Pin to space".
+  useEffect(() => {
+    void cloud
+      .listSpaces()
+      .then((d) => {
+        const s = d.spaces.find((x) => x.id === d.selectedId) ?? d.spaces[0];
+        if (s) setSpace({ id: s.id, name: s.name });
+      })
+      .catch(() => setSpace(null));
+  }, []);
 
   const load = useCallback(async () => {
     if (!nameKey) return;
@@ -277,6 +302,14 @@ export function FileBrowser({ vaultKey, vaultId, usage, onUsageChange }: { vault
                     act(() => (item.kind === 'file' ? cloud.updateFile(item.row.id, { trashed: false }) : cloud.updateFolder(item.row.id, { trashed: false })), 'Restored')
                   }
                   onDelete={() => setDialog({ kind: 'delete', item })}
+                  pinTo={space?.name ?? null}
+                  onPin={() =>
+                    space &&
+                    act(
+                      () => cloud.pinToSpace(space.id, item.kind === 'file' ? { fileId: item.row.id } : { folderId: item.row.id }),
+                      `Pinned to ${space.name}`,
+                    )
+                  }
                 />
               ))}
             </ul>
@@ -364,6 +397,8 @@ function Row(props: {
   onTrash: () => void;
   onRestore: () => void;
   onDelete: () => void;
+  pinTo: string | null;
+  onPin: () => void;
 }) {
   const { item, trashed } = props;
   const name = label(item);
@@ -410,6 +445,11 @@ function Row(props: {
                     Rename
                   </MenuItem>
                 )}
+                {props.pinTo ? (
+                  <MenuItem icon={Pin} onSelect={props.onPin}>
+                    Pin to {props.pinTo}
+                  </MenuItem>
+                ) : null}
                 {item.kind === 'file' ? (
                   <MenuItem icon={Star} onSelect={props.onFavorite}>
                     {item.row.favorite ? 'Remove from favourites' : 'Add to favourites'}

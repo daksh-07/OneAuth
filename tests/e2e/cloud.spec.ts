@@ -127,3 +127,49 @@ test('Cloud APIs refuse cross-site reads and unauthenticated access', async ({ r
   expect((await request.get('/api/cloud/vault', { headers: { 'sec-fetch-site': 'cross-site' } })).status()).toBe(403);
   expect((await request.post('/api/cloud/files', { headers: { origin: 'https://evil.example' }, data: {} })).status()).toBe(403);
 });
+
+test('spaces: create, switch, pin an encrypted file and restrict to this device', async ({ page }) => {
+  test.setTimeout(90_000);
+  const errors = collectConsoleErrors(page);
+  await addVirtualAuthenticator(page);
+  await signUp(page, 'Robin Shaw');
+  await finishOnboarding(page);
+
+  await page.goto('/space');
+  await expect(page.getByRole('button', { name: /Current space: Personal/ })).toBeVisible();
+  await expect(page.getByText('Nothing pinned yet')).toBeVisible();
+  await page.getByRole('button', { name: /Current space/ }).click();
+  await page.getByRole('menuitem', { name: 'New space' }).click();
+  await page.getByLabel('Name').fill('Work');
+  await page.getByRole('button', { name: 'Create space' }).click();
+  await expect(page.getByRole('button', { name: /Current space: Work/ })).toBeVisible();
+  await expectNoA11yViolations(page);
+
+  // Set up Cloud, upload a test file and pin it to Work.
+  await page.goto('/cloud');
+  await page.getByRole('button', { name: 'Create my vault' }).click();
+  const key = (await page.getByTestId('recovery-key').textContent())!.trim();
+  await page.getByLabel('I’ve saved my recovery key somewhere safe.').check();
+  await page.getByLabel('To confirm, type group 5 of your key').fill(key.split('-')[4]);
+  await page.getByRole('button', { name: 'Create vault' }).click();
+  await page.getByTestId('upload-input').setInputFiles({ name: 'plan.txt', mimeType: 'text/plain', buffer: Buffer.from('test plan') });
+  await expect(page.getByTestId('cloud-items').getByText('plan.txt')).toBeVisible();
+  await page.getByRole('button', { name: 'Actions for plan.txt' }).click();
+  await page.getByRole('menuitem', { name: 'Pin to Work' }).click();
+  await expect(page.getByText('Pinned to Work')).toBeVisible();
+
+  await page.goto('/space');
+  await expect(page.getByTestId('space-pins').getByText('plan.txt')).toBeVisible();
+  // Personal doesn't have it.
+  await page.getByRole('button', { name: /Current space/ }).click();
+  await page.getByRole('menuitem', { name: 'Personal' }).click();
+  await expect(page.getByText('Nothing pinned yet')).toBeVisible();
+
+  // Restrict Personal to this device only.
+  await page.getByRole('button', { name: 'Space settings' }).click();
+  await page.getByLabel('Only the devices I choose').check();
+  await page.getByRole('button', { name: 'Save' }).click();
+  await expect(page.getByText('Shown only on 1 device.')).toBeVisible();
+  await page.screenshot({ path: `${SHOTS}/space-desktop.png`, fullPage: true });
+  expect(errors).toEqual([]);
+});

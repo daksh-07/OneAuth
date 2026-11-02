@@ -21,7 +21,7 @@ function formatPrice(p: { amount: number; currency: string } | null) {
   return `${new Intl.NumberFormat('en-AU', { style: 'currency', currency: p.currency }).format(p.amount / 100)}/mo`;
 }
 
-export default async function CloudPage() {
+export default async function CloudPage({ searchParams }: { searchParams: Promise<{ folder?: string }> }) {
   const session = await requirePageSession();
   if (cloudEnabled()) {
     if (session.kind !== 'primary' || session.device_kind !== 'owned') {
@@ -35,7 +35,7 @@ export default async function CloudPage() {
     return (
       <>
         <PageHeader title="Cloud" description="Encrypted in your browser before upload. OneAuth stores only encrypted data." />
-        <CloudApp userId={session.user_id} />
+        <CloudApp userId={session.user_id} initialFolder={/^[0-9a-f-]{36}$/i.test((await searchParams).folder ?? '') ? (await searchParams).folder! : null} />
       </>
     );
   }

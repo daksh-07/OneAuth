@@ -267,3 +267,40 @@ export function formatBytes(n: number): string {
   }
   return `${x < 10 ? x.toFixed(1) : Math.round(x)} ${units[i]}`;
 }
+
+/**
+ * Unlocks the vault on this browser if it's already an approved vault device.
+ * Never registers or creates anything: returns null when Cloud isn't set up here.
+ */
+export async function tryUnlock(userId: string): Promise<{ vaultKey: Uint8Array; vaultId: string } | null> {
+  try {
+    const keys = await loadDeviceKeys(userId);
+    if (!keys) return null;
+    const s = await getState();
+    if (!s.vault || s.device?.status !== 'active') return null;
+    return { vaultKey: await unlock(s, keys.privateKey), vaultId: s.vault.id };
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------- spaces
+
+export interface Space {
+  id: string;
+  name: string;
+  kind: 'personal' | 'work' | 'study' | 'other';
+  accent: 'blue' | 'green' | 'amber' | 'rose' | 'violet' | 'slate';
+  all_devices: boolean;
+  device_ids: string[];
+}
+export const listSpaces = () =>
+  request<{ spaces: Space[]; selectedId: string | null; devices: { id: string; name: string }[] }>('GET', '/api/space');
+export const selectSpace = (spaceId: string) => request('POST', '/api/space/select', { spaceId });
+export const createSpace = (name: string, kind: Space['kind']) => request<{ id: string }>('POST', '/api/space', { name, kind });
+export const updateSpace = (id: string, patch: Record<string, unknown>) => request('PATCH', `/api/space/${id}`, patch);
+export const deleteSpace = (id: string) => request('DELETE', `/api/space/${id}`);
+export const listPins = (id: string) =>
+  request<{ files: (FileRow & { pin_id: string })[]; folders: (FolderRow & { pin_id: string })[] }>('GET', `/api/space/${id}/pins`);
+export const pinToSpace = (spaceId: string, item: { fileId?: string; folderId?: string }) => request('POST', `/api/space/${spaceId}/pins`, item);
+export const unpinFromSpace = (spaceId: string, pinId: string) => request('DELETE', `/api/space/${spaceId}/pins/${pinId}`);

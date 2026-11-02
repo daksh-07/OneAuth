@@ -32,6 +32,14 @@ export const SCOPES = {
     label: 'Encrypted files (change)',
     description: 'Upload, rename, move and delete encrypted files.',
   },
+  'space:read': {
+    label: 'Your spaces',
+    description: 'See your spaces and what’s pinned in them.',
+  },
+  'space:write': {
+    label: 'Change your spaces',
+    description: 'Create spaces, change their settings and pins.',
+  },
 } as const;
 
 export type Scope = keyof typeof SCOPES;
